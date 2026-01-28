@@ -500,6 +500,10 @@ class ExecutionLoop:
                 if not all(r.success for r in validation_results.values()):
                     validation_output = summary
 
+            if not diff.strip() and not validation_output:
+                logger.info("No changes detected; skipping review")
+                return True
+
             # Skip review if emergency mode
             if self.safety.should_skip_review():
                 logger.warning("⚠️  Skipping review (EMERGENCY MODE)")
