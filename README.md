@@ -38,7 +38,10 @@ Autopilot is a local-first controller that orchestrates a "builder + reviewer" l
 git clone <repo-url>
 cd autopilot
 
-# Install dependencies
+# Install (recommended)
+./install.sh
+
+# Or install dependencies directly
 pip install -e .
 
 # Initialize configuration
