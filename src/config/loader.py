@@ -93,12 +93,12 @@ def create_default_config(config_path: Path) -> None:
         },
         "reviewer": {
             "mode": "codex_cli",
-            "model": "gpt-4",
+            "model": None,
             "max_retries": 1,
         },
         "planner": {
             "mode": "codex_cli",
-            "model": "gpt-4",
+            "model": None,
         },
         "builder": {
             "cli_path": "claude",

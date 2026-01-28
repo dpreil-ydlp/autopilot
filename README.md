@@ -151,7 +151,11 @@ safety:
 
 reviewer:
   mode: codex_cli  # or openai_api
-  model: gpt-4
+  model: null      # optional; uses OPENAI_MODEL if openai_api
+
+planner:
+  mode: codex_cli  # or openai_api
+  model: null      # optional; uses OPENAI_MODEL if openai_api
 
 builder:
   cli_path: claude

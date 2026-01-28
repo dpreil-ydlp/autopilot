@@ -59,7 +59,10 @@ class ReviewerConfig(BaseModel):
     """Reviewer agent configuration."""
 
     mode: str = Field(default="codex_cli", description="codex_cli or openai_api")
-    model: str = Field(default="gpt-4", description="Model for openai_api mode")
+    model: Optional[str] = Field(
+        default=None,
+        description="Model for openai_api mode (falls back to OPENAI_MODEL)",
+    )
     api_key_env: Optional[str] = Field(default=None, description="API key env var name")
     max_retries: int = Field(default=1, description="Max review retries")
     json_schema_path: str = Field(default="schemas/review.json", description="Review schema path")
@@ -69,7 +72,10 @@ class PlannerConfig(BaseModel):
     """Planner agent configuration."""
 
     mode: str = Field(default="codex_cli", description="codex_cli or openai_api")
-    model: str = Field(default="gpt-4", description="Model for openai_api mode")
+    model: Optional[str] = Field(
+        default=None,
+        description="Model for openai_api mode (falls back to OPENAI_MODEL)",
+    )
     api_key_env: Optional[str] = Field(default=None, description="API key env var name")
     json_schema_path: str = Field(default="schemas/plan.json", description="Plan schema path")
 

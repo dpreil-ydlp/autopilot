@@ -23,7 +23,7 @@ class CodexAgent(BaseAgent):
         """
         super().__init__(config)
         self.mode = config.get("mode", "codex_cli")
-        self.model = config.get("model", "gpt-4")
+        self.model = config.get("model") or os.environ.get("OPENAI_MODEL")
         self.api_key_env = config.get("api_key_env", "OPENAI_API_KEY")
         self.json_schema_path = config.get("json_schema_path")
 
@@ -258,6 +258,8 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
             api_key = os.environ.get(self.api_key_env)
             if not api_key:
                 raise AgentError(f"API key not found: {self.api_key_env}")
+            if not self.model:
+                raise AgentError("Model not configured. Set reviewer.model or OPENAI_MODEL.")
 
             client = openai.OpenAI(api_key=api_key)
 
@@ -296,6 +298,8 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
             api_key = os.environ.get(self.api_key_env)
             if not api_key:
                 raise AgentError(f"API key not found: {self.api_key_env}")
+            if not self.model:
+                raise AgentError("Model not configured. Set planner.model or OPENAI_MODEL.")
 
             client = openai.OpenAI(api_key=api_key)
 
@@ -333,6 +337,8 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
             api_key = os.environ.get(self.api_key_env)
             if not api_key:
                 raise AgentError(f"API key not found: {self.api_key_env}")
+            if not self.model:
+                raise AgentError("Model not configured. Set reviewer.model or OPENAI_MODEL.")
 
             client = openai.OpenAI(api_key=api_key)
 
