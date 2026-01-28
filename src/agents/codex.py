@@ -3,6 +3,8 @@
 import json
 import logging
 import os
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +30,7 @@ class CodexAgent(BaseAgent):
         self.json_schema_path = config.get("json_schema_path")
         self.disable_mcp = config.get("disable_mcp", True)
         self.codex_overrides = config.get("codex_overrides", [])
+        self._isolated_codex_home: Optional[Path] = None
 
     async def execute(
         self,
@@ -253,7 +256,7 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
                 prompt=prompt,
                 schema_path=self.json_schema_path,
             )
-            result = await manager.run(command, cwd=work_dir)
+            result = await manager.run(command, cwd=work_dir, env=self._get_codex_env())
             try:
                 return self._parse_review_json(result["output"])
             except AgentError:
@@ -293,7 +296,11 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
         """Plan using Codex CLI."""
         try:
             manager = SubprocessManager(timeout_sec=timeout_sec)
-            result = await manager.run(self._build_codex_command(prompt), cwd=work_dir)
+            result = await manager.run(
+                self._build_codex_command(prompt),
+                cwd=work_dir,
+                env=self._get_codex_env(),
+            )
             try:
                 return self._parse_plan_json(result["output"])
             except AgentError:
@@ -333,7 +340,11 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
         """Generate UAT using Codex CLI."""
         try:
             manager = SubprocessManager(timeout_sec=timeout_sec)
-            result = await manager.run(self._build_codex_command(prompt), cwd=work_dir)
+            result = await manager.run(
+                self._build_codex_command(prompt),
+                cwd=work_dir,
+                env=self._get_codex_env(),
+            )
             if result["success"]:
                 return result["output"]
             if result["output"].strip():
@@ -396,6 +407,54 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
 
         command.append(prompt)
         return command
+
+    def _get_codex_env(self) -> Optional[dict[str, str]]:
+        """Return environment overrides for Codex CLI."""
+        if not self.disable_mcp:
+            return None
+
+        if self._isolated_codex_home is None:
+            self._isolated_codex_home = self._create_isolated_codex_home()
+
+        env = os.environ.copy()
+        env["HOME"] = str(self._isolated_codex_home)
+        return env
+
+    def _create_isolated_codex_home(self) -> Path:
+        """Create an isolated Codex home without MCP servers configured."""
+        temp_home = Path(tempfile.mkdtemp(prefix="codex-nomcp-"))
+        source_codex = Path.home() / ".codex"
+        target_codex = temp_home / ".codex"
+        if source_codex.exists():
+            shutil.copytree(source_codex, target_codex, dirs_exist_ok=True)
+        else:
+            target_codex.mkdir(parents=True, exist_ok=True)
+
+        config_path = target_codex / "config.toml"
+        if config_path.exists():
+            config_text = config_path.read_text(encoding="utf-8")
+            config_path.write_text(self._strip_mcp_sections(config_text), encoding="utf-8")
+
+        return temp_home
+
+    @staticmethod
+    def _strip_mcp_sections(config_text: str) -> str:
+        """Remove MCP server blocks from Codex config."""
+        lines = config_text.splitlines()
+        stripped: list[str] = []
+        skip = False
+
+        for line in lines:
+            if line.startswith("[mcp_servers"):
+                skip = True
+                continue
+            if skip and line.startswith("[") and not line.startswith("[mcp_servers"):
+                skip = False
+            if skip:
+                continue
+            stripped.append(line)
+
+        return "\n".join(stripped) + ("\n" if config_text.endswith("\n") else "")
 
     def _parse_plan_json(self, output: str) -> dict:
         """Parse plan JSON from output."""
