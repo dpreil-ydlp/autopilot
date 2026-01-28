@@ -83,8 +83,8 @@ async def expand_plan(
             if not task_id:
                 task_id = f"task-{len(tasks) + 1}"
                 logger.warning(f"Plan task missing id; assigning {task_id}")
-            title = task_data["title"]
-            description = task_data.get("description", "")
+            description = task_data.get("description") or task_data.get("goal") or ""
+            title = task_data.get("title") or (description if description else f"Task {task_id}")
             dependencies = task_data.get("depends_on") or task_data.get("dependencies", [])
             validation_commands = task_data.get("validation_commands", {})
 
