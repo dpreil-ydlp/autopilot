@@ -1,0 +1,66 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Plan DAG",
+  "type": "object",
+  "required": ["tasks", "edges", "topo_order", "parallel_batches"],
+  "properties": {
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "description", "dependencies"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique task identifier"
+          },
+          "title": {
+            "type": "string",
+            "description": "Task title"
+          },
+          "description": {
+            "type": "string",
+            "description": "Detailed task description"
+          },
+          "dependencies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "List of task IDs this task depends on"
+          }
+        }
+      },
+      "description": "List of all tasks in the DAG"
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "minItems": 2,
+        "maxItems": 2
+      },
+      "description": "Dependency edges as [from, to] pairs"
+    },
+    "topo_order": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Topological sort of task IDs"
+    },
+    "parallel_batches": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "description": "Groups of tasks that can run in parallel"
+    }
+  }
+}

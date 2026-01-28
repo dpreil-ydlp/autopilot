@@ -1,0 +1,377 @@
+# Autopilot - Dual-Agent Coding Loop
+
+**Status**: 🚧 Under Active Development (Phase 1 - Foundation)
+
+Autopilot is a local-first controller that orchestrates a "builder + reviewer" loop using Claude Code CLI (builder) and Codex CLI/OpenAI API (reviewer). The system executes task files as a state machine with multi-worker DAG scheduling, validation, UAT, and git operations.
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Orchestrator State Machine               │
+│  INIT → PRECHECK → PLAN → SCHEDULE → DISPATCH → MONITOR     │
+│    → FINAL_UAT → COMMIT → PUSH → DONE                        │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ├─→ Worker Loop (per task)
+                              │   BUILD → VALIDATE → REVIEW
+                              │   → UAT_GENERATE → UAT_RUN
+                              │   → DECIDE → [FIX loop] → DONE
+                              │
+                              ├─→ Scheduler (multi-worker DAG)
+                              └─→ Safety Guards & Recovery
+```
+
+## Installation
+
+### Prerequisites
+
+- Python 3.11+
+- Claude Code CLI (installed and in PATH)
+- Git
+- Optional: Codex CLI or OpenAI API key
+
+### Setup
+
+```bash
+# Clone repository
+git clone <repo-url>
+cd autopilot
+
+# Install dependencies
+pip install -e .
+
+# Initialize configuration
+autopilot init
+
+# Customize configuration
+vim .autopilot/config.yml
+```
+
+## Quick Start
+
+### 1. Create a Task
+
+Create `tasks/feature-auth.md`:
+
+```markdown
+# Task: Implement JWT Authentication
+
+## Goal
+Add JWT-based authentication to the API.
+
+## Acceptance Criteria
+- [ ] POST /auth/login returns JWT token
+- [ ] POST /auth/register creates user account
+- [ ] Protected endpoints validate JWT
+- [ ] Token expiration set to 15 minutes
+
+## Allowed Paths
+- src/auth/
+- src/middleware/
+- tests/auth/
+
+## Validation Commands
+```yaml
+tests: pytest -q
+lint: ruff check .
+```
+```
+
+### 2. Run Autopilot
+
+```bash
+# Run single task
+autopilot run tasks/feature-auth.md
+
+# Run from plan file
+autopilot run --plan plan.md
+
+# Run tasks in queue (lexical order)
+autopilot run --queue tasks/
+
+# Resume interrupted run
+autopilot run --resume
+```
+
+### 3. Monitor Progress
+
+```bash
+# Check status
+autopilot status
+
+# View live dashboard
+autopilot run --verbose
+
+# Pause/resume
+autopilot pause
+autopilot unpause
+
+# Stop at safe boundary
+autopilot stop
+```
+
+## Configuration
+
+Configuration file: `.autopilot/config.yml`
+
+```yaml
+repo:
+  root: /path/to/repo
+  default_branch: main
+  remote: origin
+
+commands:
+  format: ruff format .
+  lint: ruff check .
+  tests: pytest -q
+  uat: pytest -q tests/uat
+
+orchestrator:
+  planner_timeout_sec: 300
+  max_planner_retries: 1
+
+loop:
+  max_iterations: 10
+  build_timeout_sec: 600
+  validate_timeout_sec: 120
+  review_timeout_sec: 180
+
+safety:
+  allowed_paths: ["src/", "tests/"]
+  denied_paths: []
+  diff_lines_cap: 1000
+  max_todo_count: 0
+
+reviewer:
+  mode: codex_cli  # or openai_api
+  model: gpt-4
+
+builder:
+  cli_path: claude
+```
+
+## Task File Format
+
+Tasks are Markdown files with structured sections:
+
+- **Goal**: What should be accomplished
+- **Acceptance Criteria**: Definition of done (checklist)
+- **Constraints**: Technical limitations or requirements
+- **Allowed Paths**: Restrict changes to specific directories
+- **Validation Commands**: Commands to verify implementation
+- **User Acceptance Tests**: Manual UAT scenarios
+- **Notes**: Additional context
+
+## Plan File Format
+
+Plans define multiple tasks with dependencies:
+
+```markdown
+# Plan: Build Authentication System
+
+## Overview
+Implement complete authentication system with JWT tokens.
+
+## Tasks
+1. Setup project structure (no dependencies)
+2. Implement core models (depends on 1)
+3. Build API endpoints (depends on 2)
+4. Write tests (depends on 2, 3)
+5. Create documentation (depends on 3)
+```
+
+Autopilot expands plans into task DAGs and executes in parallel where possible.
+
+## Development Status
+
+### ✅ Phase 1: Foundation (M1) - **COMPLETE**
+
+- [x] Project structure & configuration
+- [x] Core data models (config, state)
+- [x] State machine implementation (orchestrator, worker)
+- [x] Agent CLI wrappers (Claude, Codex)
+- [x] Subprocess management with timeouts
+- [x] Git operations wrapper
+- [x] Logging & status dashboard
+- [x] Template files & schemas
+
+### 🚧 Phase 2: Robustness (M2) - **IN PROGRESS**
+
+- [ ] Multi-worker DAG scheduler
+- [ ] Task file parser & plan expander
+- [ ] Validation & UAT execution
+- [ ] Retry policies & error recovery
+- [ ] Scope guards enforcement
+- [ ] Kill switch implementation
+
+### 📋 Phase 3: GitHub Integration (M3)
+
+- [ ] Push & PR creation
+- [ ] PR description templates
+- [ ] Final gate CI checks
+
+### 📋 Phase 4: Polish (M4)
+
+- [ ] Enhanced console UX (live dashboard)
+- [ ] Task queue tooling
+- [ ] Metrics & reporting
+- [ ] Documentation completion
+
+## Safety Features
+
+### Kill Switches
+
+- `AUTOPILOT_STOP` - Halt at next safe boundary
+- `AUTOPILOT_PAUSE` - Pause before next transition
+- `AUTOPILOT_SKIP_REVIEW` - Emergency mode (logged)
+
+### Scope Guards
+
+- Allowed/denied path enforcement
+- Diff line count caps
+- TODO/FIXME detection
+- Network tool prohibition (optional)
+
+## Commands Reference
+
+```bash
+# Initialization
+autopilot init              # Create configuration
+autopilot init --force      # Overwrite existing config
+
+# Execution
+autopilot run <task.md>     # Run single task
+autopilot run --plan plan.md    # Run from plan
+autopilot run --queue tasks/    # Run task queue
+autopilot run --resume     # Resume interrupted run
+
+# Control
+autopilot status            # Show current status
+autopilot stop              # Request safe halt
+autopilot pause             # Pause execution
+autopilot unpause           # Resume from pause
+
+# Options
+--verbose, -v               # Enable detailed output
+--quiet                     # Minimal output
+--max-workers N             # Parallel workers
+--pattern "fix-*"           # Filter tasks
+```
+
+## Architecture Details
+
+### Orchestrator State Machine
+
+Main controller managing overall execution flow:
+
+```
+INIT → PRECHECK → PLAN → SCHEDULE → DISPATCH → MONITOR
+  → FINAL_UAT_GENERATE → FINAL_UAT_RUN → COMMIT → PUSH → DONE
+```
+
+Error states: `FAILED`, `PAUSED`
+
+### Worker Loop State Machine
+
+Per-task execution loop:
+
+```
+TASK_INIT → BUILD → VALIDATE → REVIEW
+  → UAT_GENERATE → UAT_RUN → DECIDE
+    → [FIX loop if needed] → TASK_DONE/TASK_FAILED
+```
+
+### Multi-Worker DAG Scheduler
+
+- Maintains task states (PENDING/RUNNING/DONE/FAILED/BLOCKED)
+- Computes ready set (tasks with all dependencies DONE)
+- Dispatches tasks to worker pool up to `max_workers`
+- Handles worker completion/failure
+- Updates DAG state and unlocks downstream tasks
+
+## Error Recovery
+
+### Retry Policies
+
+- **Planner failure**: retry 1x → FAILED
+- **Builder failure**: retry 1x → FAILED
+- **Reviewer failure**: retry 1x → FAILED
+- **Push failure**: retry 2x → FAILED with patch artifact
+- **Validation failure**: feed into FIX loop (no retry)
+
+### Push Recovery
+
+Classify stderr and handle appropriately:
+- **Auth**: Run `gh auth status`, halt if unrecoverable
+- **Non-fast-forward**: Fetch + rebase + retry
+- **Network**: Backoff retry
+- **Policy**: Halt + produce patch artifact
+
+## Testing
+
+```bash
+# Run all tests
+pytest
+
+# Unit tests only
+pytest tests/unit/
+
+# Integration tests only
+pytest tests/integration/
+
+# With coverage
+pytest --cov=src --cov-report=html
+```
+
+## Project Structure
+
+```
+autopilot/
+├── src/
+│   ├── main.py              # CLI entrypoint
+│   ├── config/
+│   │   ├── models.py        # Pydantic config models
+│   │   └── loader.py        # Config loader with validation
+│   ├── state/
+│   │   ├── machine.py       # Orchestrator state machine
+│   │   ├── worker.py        # Worker task loop state machine
+│   │   └── persistence.py   # State file I/O with atomic writes
+│   ├── agents/
+│   │   ├── base.py          # Base agent interface
+│   │   ├── claude.py        # Claude Code CLI wrapper
+│   │   └── codex.py         # Codex CLI/OpenAI wrapper
+│   └── utils/
+│       ├── git.py           # Git operations wrapper
+│       ├── subprocess.py    # Subprocess management with timeouts
+│       └── logging.py       # Structured logging
+├── templates/
+│   ├── task.md              # Task file template
+│   ├── plan.md              # Plan file template
+│   └── config.yml           # Config file template
+├── schemas/
+│   ├── review.json          # Reviewer JSON schema
+│   └── plan.json            # Planner JSON schema
+├── tests/
+│   ├── unit/                # Unit tests
+│   ├── integration/         # Integration tests
+│   └── fixtures/            # Test fixtures
+├── pyproject.toml           # Project dependencies
+└── README.md
+```
+
+## Contributing
+
+This is an active development project. See `IMPLEMENTATION_PLAN.md` for detailed roadmap and implementation strategy.
+
+## License
+
+MIT
+
+## Next Steps
+
+1. ✅ **Phase 1 Complete**: Core foundation implemented
+2. 🚧 **Phase 2 In Progress**: Building robustness features
+3. 📋 **Phase 3-4**: GitHub integration and polish
+
+See `IMPLEMENTATION_PLAN.md` for complete details.
