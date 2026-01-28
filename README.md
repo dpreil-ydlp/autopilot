@@ -41,6 +41,9 @@ cd autopilot
 # Install (recommended)
 ./install.sh
 
+# Or double-click the installer
+open "Install Autopilot.command"
+
 # Or install dependencies directly
 pip install -e .
 
