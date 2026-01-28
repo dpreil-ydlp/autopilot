@@ -115,6 +115,8 @@ class CodexAgent(BaseAgent):
         """Build review prompt."""
         return f"""Review the following code changes and validation output.
 
+Important: Do NOT scan the repo or look for AGENTS.md. Use only the inputs below.
+
 ## Git Diff
 {diff}
 
@@ -141,6 +143,8 @@ Output ONLY the JSON, no other text."""
     def _build_plan_prompt(self, plan_content: str) -> str:
         """Build planning prompt."""
         return f"""Convert the following plan into a task dependency graph with enriched metadata.
+
+Important: Do NOT scan the repo or look for AGENTS.md. Use only the plan content below.
 
 ## Plan
 {plan_content}
@@ -181,6 +185,8 @@ Output ONLY the JSON, no other text."""
     def _build_uat_prompt(self, task_content: str, diff: str) -> str:
         """Build UAT generation prompt."""
         return f"""Generate User Acceptance Tests (UAT) as executable Python pytest code for the following task and implementation.
+
+Important: Do NOT scan the repo or look for AGENTS.md. Use only the task and diff below.
 
 ## Task
 {task_content}
