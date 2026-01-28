@@ -41,8 +41,8 @@ class ClaudeAgent(BaseAgent):
         Returns:
             Result dict
         """
-        # Build command using print mode (non-interactive)
-        command = [self.cli_path, "--print", prompt]
+        # Build command using print mode with non-interactive permissions
+        command = [self.cli_path, "--permission-mode", "dontAsk", "--print", prompt]
 
         retries = 0
         last_error = None
