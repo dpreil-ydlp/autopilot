@@ -185,5 +185,13 @@ class ClaudeAgent(BaseAgent):
             ["git", "apply", "--whitespace=nowarn", str(patch_path)],
             cwd=target_dir,
         )
+        if result["success"]:
+            return
+
+        # Fallback to 3-way apply for patch context mismatches
+        result = await manager.run(
+            ["git", "apply", "--3way", "--whitespace=nowarn", str(patch_path)],
+            cwd=target_dir,
+        )
         if not result["success"]:
             raise AgentError(f"Failed to apply Claude diff: {result['output']}")
