@@ -388,10 +388,11 @@ class ExecutionLoop:
         """
         manager = SubprocessManager(timeout_sec=60)
 
-        # Switch back to main branch in worktree
-        result = await manager.run(["git", "checkout", self.config.github.base_branch], cwd=worktree_path)
+        # Switch back to default branch in worktree
+        default_branch = self.config.repo.default_branch
+        result = await manager.run(["git", "checkout", default_branch], cwd=worktree_path)
         if not result["success"]:
-            raise Exception(f"Failed to checkout main branch: {result['output']}")
+            raise Exception(f"Failed to checkout default branch: {result['output']}")
 
         # Merge the task branch
         result = await manager.run(
@@ -401,7 +402,7 @@ class ExecutionLoop:
         if not result["success"]:
             raise Exception(f"Failed to merge branch: {result['output']}")
 
-        logger.info(f"Merged {branch_name} into {self.config.github.base_branch}")
+        logger.info(f"Merged {branch_name} into {default_branch}")
 
     async def _build_step(
         self,
