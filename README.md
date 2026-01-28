@@ -100,8 +100,8 @@ autopilot run --resume
 # Check status
 autopilot status
 
-# View live dashboard
-autopilot run --verbose
+# View live dashboard (verbose output)
+autopilot --verbose run --plan plan.md
 
 # Pause/resume
 autopilot pause
@@ -118,7 +118,7 @@ Configuration file: `.autopilot/config.yml`
 ```yaml
 repo:
   root: /path/to/repo
-  default_branch: main
+  default_branch: main  # or master, match your repo
   remote: origin
 
 commands:
@@ -149,6 +149,10 @@ reviewer:
 
 builder:
   cli_path: claude
+  permission_mode: dontAsk
+  stream_output: true
+  stream_log_interval_sec: 1.5
+  system_prompt: null
 ```
 
 ## Task File Format
@@ -253,8 +257,10 @@ autopilot pause             # Pause execution
 autopilot unpause           # Resume from pause
 
 # Options
+--quiet                     # Minimal output (run command)
+
+# Global options
 --verbose, -v               # Enable detailed output
---quiet                     # Minimal output
 --max-workers N             # Parallel workers
 --pattern "fix-*"           # Filter tasks
 ```
@@ -362,7 +368,7 @@ autopilot/
 
 ## Contributing
 
-This is an active development project. See `IMPLEMENTATION_PLAN.md` for detailed roadmap and implementation strategy.
+This is an active development project. See `IMPLEMENTATION_STATUS.md` and the phase summaries in the repo for roadmap details.
 
 ## License
 
