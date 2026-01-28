@@ -316,20 +316,30 @@ class ExecutionLoop:
         # Main loop
         max_iterations = self.config.loop.max_iterations
         iterations_used = 0
+        last_validation_summary = ""
         for iteration in range(max_iterations):
             iterations_used = iteration + 1
             logger.info(f"Iteration {iterations_used}/{max_iterations}")
 
             # Build
-            build_success = await self._build_step(task_id, task, workdir=workdir)
+            build_success = await self._build_step(
+                task_id,
+                task,
+                workdir=workdir,
+                build_context=last_validation_summary,
+            )
             if not build_success:
                 return False
 
             # Validate
-            validate_success, validation_results = await self._validate_step(task_id, task, workdir=workdir)
+            validate_success, validation_results, validation_summary = await self._validate_step(
+                task_id, task, workdir=workdir
+            )
             if not validate_success:
+                last_validation_summary = validation_summary
                 # Feed into FIX loop
                 continue
+            last_validation_summary = ""
 
             # Review
             review_success = await self._review_step(task_id, task, validation_results, workdir=workdir)
@@ -393,7 +403,13 @@ class ExecutionLoop:
 
         logger.info(f"Merged {branch_name} into {self.config.github.base_branch}")
 
-    async def _build_step(self, task_id: str, task, workdir: Optional[Path] = None) -> bool:
+    async def _build_step(
+        self,
+        task_id: str,
+        task,
+        workdir: Optional[Path] = None,
+        build_context: str = "",
+    ) -> bool:
         """Execute build step.
 
         Args:
@@ -410,8 +426,11 @@ class ExecutionLoop:
 
         try:
             # Execute builder
+            prompt = task.raw_content
+            if build_context:
+                prompt = f"{prompt}\n\n## Validation Feedback\n{build_context}\n"
             result = await self.builder.execute(
-                prompt=task.raw_content,
+                prompt=prompt,
                 timeout_sec=self.config.loop.build_timeout_sec,
                 work_dir=workdir,
             )
@@ -427,7 +446,9 @@ class ExecutionLoop:
             logger.error(f"Build error: {e}")
             return False
 
-    async def _validate_step(self, task_id: str, task, workdir: Optional[Path] = None) -> tuple[bool, dict]:
+    async def _validate_step(
+        self, task_id: str, task, workdir: Optional[Path] = None
+    ) -> tuple[bool, dict, str]:
         """Execute validation step.
 
         Args:
@@ -458,12 +479,13 @@ class ExecutionLoop:
             if not all_passed:
                 summary = runner.get_failure_summary(results)
                 logger.error(f"Validation failed:\n{summary}")
+                return False, results, summary
 
-            return all_passed, results
+            return True, results, ""
 
         except Exception as e:
             logger.error(f"Validation error: {e}")
-            return False, {}
+            return False, {}, str(e)
 
     async def _review_step(self, task_id: str, task, validation_results: dict, workdir: Optional[Path] = None) -> bool:
         """Execute review step.
