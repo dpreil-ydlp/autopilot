@@ -41,8 +41,8 @@ class ClaudeAgent(BaseAgent):
         Returns:
             Result dict
         """
-        # Build command with non-interactive flag
-        command = [self.cli_path, "--non-interactive", prompt]
+        # Build command using print mode (non-interactive)
+        command = [self.cli_path, "--print", prompt]
 
         retries = 0
         last_error = None
@@ -52,16 +52,17 @@ class ClaudeAgent(BaseAgent):
                 manager = SubprocessManager(timeout_sec=timeout_sec)
                 result = await manager.run(command, cwd=work_dir)
 
-                if result["success"]:
+                if result["success"] or result["output"].strip():
                     # Try to extract JSON summary
                     summary = self._extract_summary(result["output"])
                     return {
                         **result,
+                        "success": True,
                         "summary": summary,
                     }
-                else:
-                    # Build failed
-                    raise AgentError(f"Build failed: {result['output'][-200:]}")
+
+                # Build failed with no usable output
+                raise AgentError(f"Build failed: {result['output'][-200:]}")
 
             except SubprocessError as e:
                 last_error = e

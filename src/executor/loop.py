@@ -294,9 +294,6 @@ class ExecutionLoop:
         branch_name = f"autopilot/{task_id}"
         if workdir != self.config.repo.root:
             # Create branch in worktree's git context
-            import asyncio
-            from .utils.subprocess import SubprocessManager
-
             manager = SubprocessManager(timeout_sec=30)
             result = await manager.run(
                 ["git", "checkout", "-B", branch_name],
@@ -379,9 +376,6 @@ class ExecutionLoop:
             worktree_path: Path to worktree
             branch_name: Branch name to merge
         """
-        import asyncio
-        from .utils.subprocess import SubprocessManager
-
         manager = SubprocessManager(timeout_sec=60)
 
         # Switch back to main branch in worktree
@@ -491,9 +485,6 @@ class ExecutionLoop:
             # Get diff from worktree
             if workdir != self.config.repo.root:
                 # Get diff from worktree
-                import asyncio
-                from .utils.subprocess import SubprocessManager
-
                 manager = SubprocessManager(timeout_sec=30)
                 result = await manager.run(["git", "diff"], cwd=workdir)
                 diff = result["output"]
@@ -557,9 +548,6 @@ class ExecutionLoop:
         try:
             # Get current diff from worktree
             if workdir != self.config.repo.root:
-                import asyncio
-                from .utils.subprocess import SubprocessManager
-
                 manager = SubprocessManager(timeout_sec=30)
                 result = await manager.run(["git", "diff"], cwd=workdir)
                 diff = result["output"]
@@ -745,9 +733,6 @@ class ExecutionLoop:
         # Stage and commit changes in worktree
         if workdir != self.config.repo.root:
             # Commit in worktree
-            import asyncio
-            from .utils.subprocess import SubprocessManager
-
             manager = SubprocessManager(timeout_sec=30)
 
             # Stage all changes

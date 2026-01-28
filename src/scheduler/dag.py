@@ -245,8 +245,7 @@ class Worker:
             )
         else:
             # Ensure we're on the right branch
-            import asyncio
-            from .subprocess import SubprocessManager
+            from ..utils.subprocess import SubprocessManager
 
             manager = SubprocessManager(timeout_sec=30)
             result = await manager.run(

@@ -77,7 +77,12 @@ async def expand_plan(
         # Parse and materialize tasks
         tasks = {}
         for task_data in tasks_data:
-            task_id = task_data["id"]
+            if not isinstance(task_data, dict):
+                raise PlanExpanderError(f"Invalid task entry in plan output: {task_data}")
+            task_id = task_data.get("id")
+            if not task_id:
+                task_id = f"task-{len(tasks) + 1}"
+                logger.warning(f"Plan task missing id; assigning {task_id}")
             title = task_data["title"]
             description = task_data.get("description", "")
             dependencies = task_data.get("depends_on") or task_data.get("dependencies", [])
@@ -273,13 +278,15 @@ def _generate_task_file(
         lines.append("")
 
     # Validation commands section
-    commands = {
-        "tests": "pytest -q",
-        "lint": "ruff check .",
-        "format": "ruff format .",
-        "uat": "pytest -q tests/uat",
-    }
-    commands.update({k: v for k, v in validation_commands.items() if v})
+    if validation_commands:
+        commands = {k: v for k, v in validation_commands.items() if v}
+    else:
+        commands = {
+            "tests": "pytest -q",
+            "lint": "ruff check .",
+            "format": "ruff format .",
+            "uat": "pytest -q tests/uat",
+        }
 
     lines.extend(["## Validation Commands", "```yaml"])
     for key, value in commands.items():

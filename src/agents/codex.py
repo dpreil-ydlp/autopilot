@@ -25,6 +25,7 @@ class CodexAgent(BaseAgent):
         self.mode = config.get("mode", "codex_cli")
         self.model = config.get("model", "gpt-4")
         self.api_key_env = config.get("api_key_env", "OPENAI_API_KEY")
+        self.json_schema_path = config.get("json_schema_path")
 
     async def execute(
         self,
@@ -151,11 +152,13 @@ Return JSON with keys:
 Each task object must include:
 - id: "task-1", "task-2", ...
 - title
+- description
 - goal
 - acceptance_criteria: list of strings
 - allowed_paths: list of path prefixes
 - validation_commands: object with optional overrides (tests, lint, format, uat)
 - depends_on: list of task ids
+- dependencies: list of task ids
 - suggested_claude_skills: list of strings
 - suggested_mcp_servers: list of strings
 - suggested_subagents: list of strings
@@ -233,7 +236,10 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
         try:
             # Assuming codex CLI exists
             manager = SubprocessManager(timeout_sec=timeout_sec)
-            result = await manager.run(["codex", "exec", prompt], cwd=work_dir)
+            command = ["codex", "exec", prompt]
+            if self.json_schema_path:
+                command = ["codex", "exec", "--output-schema", self.json_schema_path, prompt]
+            result = await manager.run(command, cwd=work_dir)
             try:
                 return self._parse_review_json(result["output"])
             except AgentError:
