@@ -165,9 +165,14 @@ Each task object must include:
 - estimated_complexity: "low" | "medium" | "high" | "critical"
 
 Rules:
-- Create one task per task in the plan (here: 3 tasks).
-- Use ids task-1..task-3 in order.
-- Ensure edges/topo_order/parallel_batches reference ONLY those ids.
+- You MUST decompose large or multi-part plan items into bite-size tasks suitable for a swarm.
+- A task should be small and single-scope (e.g., one screen, one endpoint, one component, one data layer change).
+- Target tasks that a single agent can complete and validate quickly (roughly 1–2 hours, a few files).
+- It is OK (expected) to output MORE tasks than listed in the plan.
+- Explicitly encode dependencies so the DAG can parallelize safely.
+- Prefer separating foundations (design system, routing, data models) from feature work.
+- Ensure edges/topo_order/parallel_batches reference ONLY the task ids you emit.
+- Use ids task-1..task-N in order, with N = total tasks you produce.
 
 Output ONLY the JSON, no other text."""
 
