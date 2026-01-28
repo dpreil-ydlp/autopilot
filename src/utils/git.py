@@ -2,6 +2,7 @@
 
 import logging
 import re
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -356,10 +357,15 @@ class GitOps:
         # Create parent directory
         worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Remove existing worktree if force
-        if force and worktree_path.exists():
-            logger.warning(f"Removing existing worktree: {worktree_path}")
-            await self.remove_worktree(worktree_path)
+        # Remove existing worktree if force or stale directory
+        if worktree_path.exists():
+            if force:
+                logger.warning(f"Removing existing worktree: {worktree_path}")
+                await self.remove_worktree(worktree_path)
+            else:
+                # Stale directory from a prior failed worktree
+                logger.warning(f"Removing stale worktree directory: {worktree_path}")
+                shutil.rmtree(worktree_path, ignore_errors=True)
 
         # Create worktree (create branch if needed)
         branch_exists = await self.branch_exists(branch)
