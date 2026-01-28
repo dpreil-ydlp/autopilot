@@ -80,6 +80,12 @@ class BuilderConfig(BaseModel):
     cli_path: str = Field(default="claude", description="Claude Code CLI path")
     max_retries: int = Field(default=1, description="Max build retries")
     allowed_skills: list[str] = Field(default_factory=list, description="Allowed skills")
+    permission_mode: str = Field(default="dontAsk", description="Claude permission mode")
+    stream_output: bool = Field(default=True, description="Stream Claude output")
+    stream_log_interval_sec: float = Field(
+        default=1.5, description="Seconds between streamed log flushes"
+    )
+    system_prompt: Optional[str] = Field(default=None, description="Builder system prompt override")
 
 
 class GitHubConfig(BaseModel):

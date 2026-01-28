@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,7 @@ class SubprocessManager:
         cwd: Optional[Path] = None,
         env: Optional[dict[str, str]] = None,
         capture_output: bool = True,
+        on_output_line: Optional[Callable[[str], None]] = None,
     ) -> dict:
         """Run command with timeout and stuck detection.
 
@@ -101,6 +102,7 @@ class SubprocessManager:
                         last_output_time,
                         output_lines,
                         log_path,
+                        on_output_line,
                     )
                 )
                 wait_task = asyncio.create_task(process.wait())
@@ -184,6 +186,7 @@ class SubprocessManager:
         last_output_time: dict[str, datetime],
         output_lines: list[str],
         log_path: Optional[Path] = None,
+        on_output_line: Optional[Callable[[str], None]] = None,
     ) -> None:
         """Read process output with stuck detection.
 
@@ -201,9 +204,25 @@ class SubprocessManager:
             # Read stdout and stderr concurrently
             readers = []
             if process.stdout:
-                readers.append(self._read_stream(process.stdout, last_output_time, output_lines, log_file))
+                readers.append(
+                    self._read_stream(
+                        process.stdout,
+                        last_output_time,
+                        output_lines,
+                        log_file,
+                        on_output_line,
+                    )
+                )
             if process.stderr:
-                readers.append(self._read_stream(process.stderr, last_output_time, output_lines, log_file))
+                readers.append(
+                    self._read_stream(
+                        process.stderr,
+                        last_output_time,
+                        output_lines,
+                        log_file,
+                        on_output_line,
+                    )
+                )
 
             # Wait for all streams to close
             await asyncio.gather(*readers)
@@ -218,6 +237,7 @@ class SubprocessManager:
         last_output_time: dict[str, datetime],
         output_lines: list[str],
         log_file: Optional[object] = None,
+        on_output_line: Optional[Callable[[str], None]] = None,
     ) -> None:
         """Read from a single stream.
 
@@ -235,6 +255,8 @@ class SubprocessManager:
             line_str = line.decode("utf-8", errors="replace")
             output_lines.append(line_str)
             last_output_time["value"] = datetime.now()
+            if on_output_line:
+                on_output_line(line_str)
 
             if log_file:
                 log_file.write(line_str)

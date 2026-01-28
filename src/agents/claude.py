@@ -25,6 +25,10 @@ class ClaudeAgent(BaseAgent):
         self.cli_path = config.get("cli_path", "claude")
         self.max_retries = config.get("max_retries", 1)
         self.allowed_skills = config.get("allowed_skills", [])
+        self.permission_mode = config.get("permission_mode", "dontAsk")
+        self.stream_output = config.get("stream_output", True)
+        self.stream_log_interval_sec = config.get("stream_log_interval_sec", 1.5)
+        self.system_prompt = config.get("system_prompt")
 
     async def execute(
         self,
@@ -44,7 +48,29 @@ class ClaudeAgent(BaseAgent):
         """
         # Build command using print mode with non-interactive permissions
         wrapped_prompt = self._wrap_prompt(prompt)
-        command = [self.cli_path, "--permission-mode", "dontAsk", "--print", wrapped_prompt]
+        if self.stream_output:
+            command = [
+                self.cli_path,
+                "--permission-mode",
+                self.permission_mode,
+                "--print",
+                "--verbose",
+                "--output-format",
+                "stream-json",
+                "--include-partial-messages",
+                wrapped_prompt,
+            ]
+        else:
+            command = [
+                self.cli_path,
+                "--permission-mode",
+                self.permission_mode,
+                "--print",
+                wrapped_prompt,
+            ]
+        if self.system_prompt:
+            command.insert(1, "--system-prompt")
+            command.insert(2, self.system_prompt)
 
         retries = 0
         last_error = None
@@ -52,19 +78,91 @@ class ClaudeAgent(BaseAgent):
         while retries <= self.max_retries:
             try:
                 manager = SubprocessManager(timeout_sec=timeout_sec)
-                result = await manager.run(command, cwd=work_dir)
+                stream_state = {
+                    "result": None,
+                    "text_parts": [],
+                    "buffer": "",
+                    "last_flush": time.time(),
+                }
 
-                if result["success"] or result["output"].strip():
-                    diff = self._extract_diff(result["output"])
+                def handle_line(line: str) -> None:
+                    if not self.stream_output:
+                        return
+                    try:
+                        payload = json.loads(line)
+                    except Exception:
+                        return
+
+                    payload_type = payload.get("type")
+                    if payload_type == "stream_event":
+                        event = payload.get("event", {})
+                        if event.get("type") == "content_block_delta":
+                            delta = event.get("delta", {})
+                            if delta.get("type") == "text_delta":
+                                text = delta.get("text", "")
+                                if text:
+                                    stream_state["text_parts"].append(text)
+                                    stream_state["buffer"] += text
+                    elif payload_type == "result":
+                        stream_state["result"] = payload.get("result")
+                    elif payload_type == "assistant":
+                        message = payload.get("message", {})
+                        contents = message.get("content", [])
+                        if isinstance(contents, list):
+                            for block in contents:
+                                if block.get("type") == "text" and block.get("text"):
+                                    stream_state["text_parts"].append(block["text"])
+
+                    now = time.time()
+                    buffer_text = stream_state["buffer"]
+                    if (
+                        buffer_text
+                        and (
+                            "\n" in buffer_text
+                            or len(buffer_text) >= 200
+                            or now - stream_state["last_flush"] >= self.stream_log_interval_sec
+                        )
+                    ):
+                        logger.info("claude> %s", buffer_text.rstrip())
+                        stream_state["buffer"] = ""
+                        stream_state["last_flush"] = now
+
+                result = await manager.run(
+                    command,
+                    cwd=work_dir,
+                    on_output_line=handle_line if self.stream_output else None,
+                )
+
+                if self.stream_output and stream_state["buffer"]:
+                    logger.info("claude> %s", stream_state["buffer"].rstrip())
+                    stream_state["buffer"] = ""
+
+                output_text = result["output"]
+                if self.stream_output:
+                    output_text = self._resolve_streamed_text(output_text, stream_state) or output_text
+                    result["output"] = output_text
+
+                if result["success"] or output_text.strip():
+                    diff = self._extract_diff(output_text)
                     if diff:
                         await self._apply_diff(diff, work_dir)
-                    elif "NO_CHANGES" not in result["output"]:
-                        raise AgentError(
-                            "Build output did not include a unified diff or NO_CHANGES marker."
+                    elif "NO_CHANGES" not in output_text:
+                        # If Claude edited files directly, accept working tree changes
+                        status = await manager.run(
+                            ["git", "status", "--porcelain"],
+                            cwd=work_dir,
                         )
+                        if status["output"].strip():
+                            logger.warning(
+                                "Claude output missing diff but working tree has changes; continuing"
+                            )
+                        else:
+                            raise AgentError(
+                                "Build output did not include a unified diff or NO_CHANGES marker."
+                            )
 
                     # Try to extract JSON summary
-                    summary = self._extract_summary(result["output"])
+                    summary = self._extract_summary(output_text)
                     return {
                         **result,
                         "success": True,
@@ -150,27 +248,80 @@ class ClaudeAgent(BaseAgent):
         return (
             "You are running in non-interactive mode. "
             "Output ONLY a unified git diff that can be applied with `git apply`. "
+            "Do NOT include commentary, explanations, or code fences. "
+            "Your output must start with 'diff --git' or '--- a/'. "
             "If no changes are needed, output exactly: NO_CHANGES.\n\n"
             f"{prompt}"
         )
 
     def _extract_diff(self, output: str) -> str:
         """Extract a unified diff from Claude output."""
-        if "diff --git" not in output:
-            return ""
+        def _looks_like_diff(text: str) -> bool:
+            return "diff --git" in text or (
+                "\n--- " in f"\n{text}" and "\n+++ " in f"\n{text}"
+            )
 
-        if "```" not in output:
-            return output.strip()
+        # Prefer fenced diff blocks if present
+        if "```" in output:
+            sections = output.split("```")
+            diff_blocks = []
+            for i in range(1, len(sections), 2):
+                block = sections[i].strip()
+                if _looks_like_diff(block):
+                    diff_blocks.append(block)
+            if diff_blocks:
+                return diff_blocks[-1]
 
-        start = output.find("```")
-        if start == -1:
-            return output.strip()
+        # Fallback: find first diff-like line in raw output
+        lines = output.splitlines()
+        last_idx = None
+        for idx, line in enumerate(lines):
+            if line.startswith("diff --git"):
+                last_idx = idx
+            if line.startswith("--- "):
+                # ensure next line is +++ 
+                if idx + 1 < len(lines) and lines[idx + 1].startswith("+++ "):
+                    last_idx = idx
 
-        end = output.find("```", start + 3)
-        if end == -1:
-            return output[start + 3 :].strip()
+        if last_idx is not None:
+            return "\n".join(lines[last_idx:]).strip()
 
-        return output[start + 3 : end].strip()
+        return ""
+
+    def _resolve_streamed_text(self, output: str, stream_state: dict) -> str:
+        """Resolve streamed JSON output into plain text."""
+        if stream_state.get("result"):
+            return stream_state["result"] or ""
+        text = "".join(stream_state.get("text_parts", [])).strip()
+        if text:
+            return text
+
+        # Fallback: parse from output lines if state is empty
+        parts: list[str] = []
+        result_text = ""
+        for line in output.splitlines():
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if payload.get("type") == "result":
+                result_text = payload.get("result", "") or result_text
+            elif payload.get("type") == "assistant":
+                message = payload.get("message", {})
+                contents = message.get("content", [])
+                if isinstance(contents, list):
+                    for block in contents:
+                        if block.get("type") == "text" and block.get("text"):
+                            parts.append(block["text"])
+            elif payload.get("type") == "stream_event":
+                event = payload.get("event", {})
+                if event.get("type") == "content_block_delta":
+                    delta = event.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        parts.append(delta.get("text", ""))
+        if result_text:
+            return result_text
+        return "".join(parts).strip()
 
     async def _apply_diff(self, diff: str, work_dir: Optional[Path]) -> None:
         """Apply diff with git apply in working directory."""
@@ -178,7 +329,10 @@ class ClaudeAgent(BaseAgent):
         patch_dir = target_dir / ".autopilot" / "patches"
         patch_dir.mkdir(parents=True, exist_ok=True)
         patch_path = patch_dir / f"claude_{int(time.time())}.diff"
-        patch_path.write_text(diff, encoding="utf-8")
+        patch_text = self._sanitize_diff(diff)
+        if not patch_text.endswith("\n"):
+            patch_text = f"{patch_text}\n"
+        patch_path.write_text(patch_text, encoding="utf-8")
 
         manager = SubprocessManager(timeout_sec=60)
         result = await manager.run(
@@ -194,4 +348,49 @@ class ClaudeAgent(BaseAgent):
             cwd=target_dir,
         )
         if not result["success"]:
+            # If Claude applied edits directly, accept working tree changes
+            status = await manager.run(
+                ["git", "status", "--porcelain"],
+                cwd=target_dir,
+            )
+            if status["output"].strip():
+                logger.warning(
+                    "Claude diff failed to apply but working tree has changes; continuing"
+                )
+                return
             raise AgentError(f"Failed to apply Claude diff: {result['output']}")
+
+    def _sanitize_diff(self, diff: str) -> str:
+        """Normalize diff lines to reduce corruption from missing prefixes."""
+        lines = diff.splitlines()
+        sanitized: list[str] = []
+        in_hunk = False
+
+        for line in lines:
+            if line.startswith("diff --git"):
+                in_hunk = False
+                sanitized.append(line)
+                continue
+            if line.startswith(("index ", "deleted file mode", "new file mode")):
+                sanitized.append(line)
+                continue
+            if line.startswith(("--- ", "+++ ")):
+                sanitized.append(line)
+                continue
+            if line.startswith("@@"):
+                in_hunk = True
+                sanitized.append(line)
+                continue
+            if line.startswith("\\ No newline"):
+                sanitized.append(line)
+                continue
+
+            if in_hunk:
+                if line.startswith(("+", "-", " ")):
+                    sanitized.append(line)
+                else:
+                    sanitized.append(f"+{line}")
+            else:
+                sanitized.append(line)
+
+        return "\n".join(sanitized)

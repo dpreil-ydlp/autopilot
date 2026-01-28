@@ -87,6 +87,12 @@ async def expand_plan(
             title = task_data.get("title") or (description if description else f"Task {task_id}")
             dependencies = task_data.get("depends_on") or task_data.get("dependencies", [])
             validation_commands = task_data.get("validation_commands", {})
+            if not isinstance(validation_commands, dict):
+                logger.warning(
+                    "Plan task %s has non-dict validation_commands; ignoring",
+                    task_id,
+                )
+                validation_commands = {}
 
             # Extract enriched fields with defaults
             goal = task_data.get("goal", description)
@@ -206,6 +212,8 @@ def _generate_task_file(
     if subagents_used is None:
         subagents_used = []
     if validation_commands is None:
+        validation_commands = {}
+    if not isinstance(validation_commands, dict):
         validation_commands = {}
 
     lines = [

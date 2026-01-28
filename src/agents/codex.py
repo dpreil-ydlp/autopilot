@@ -364,11 +364,28 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
     def _parse_plan_json(self, output: str) -> dict:
         """Parse plan JSON from output."""
         try:
-            json_start = output.find("{")
-            if json_start >= 0:
-                decoder = json.JSONDecoder()
-                parsed, _ = decoder.raw_decode(output[json_start:])
-                return parsed
+            decoder = json.JSONDecoder()
+            candidates: list[dict] = []
+            idx = output.find("{")
+            while idx >= 0:
+                try:
+                    parsed, end = decoder.raw_decode(output[idx:])
+                    if isinstance(parsed, dict):
+                        candidates.append(parsed)
+                    idx = output.find("{", idx + end)
+                except json.JSONDecodeError:
+                    idx = output.find("{", idx + 1)
+
+            # Prefer the most recent dict that includes tasks with content
+            for candidate in reversed(candidates):
+                tasks = candidate.get("tasks")
+                if isinstance(tasks, list) and tasks:
+                    return candidate
+
+            # Fallback to any dict that includes tasks (even empty)
+            for candidate in reversed(candidates):
+                if "tasks" in candidate:
+                    return candidate
 
         except json.JSONDecodeError as e:
             raise AgentError(f"Failed to parse plan JSON: {e}")

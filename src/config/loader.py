@@ -103,6 +103,10 @@ def create_default_config(config_path: Path) -> None:
         "builder": {
             "cli_path": "claude",
             "max_retries": 1,
+            "permission_mode": "dontAsk",
+            "stream_output": True,
+            "stream_log_interval_sec": 1.5,
+            "system_prompt": None,
         },
         "github": {
             "enabled": False,

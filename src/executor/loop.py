@@ -178,6 +178,10 @@ class ExecutionLoop:
             git_ops=self.git_ops,
         )
 
+        if not dag.tasks:
+            logger.error("No tasks to execute in DAG")
+            return False
+
         # Update state
         self.machine.update_task(
             list(dag.tasks.keys())[0],
@@ -388,16 +392,21 @@ class ExecutionLoop:
         """
         manager = SubprocessManager(timeout_sec=60)
 
-        # Switch back to default branch in worktree
+        # Merge from repo root to avoid worktree checkout conflicts
+        repo_root = self.config.repo.root
         default_branch = self.config.repo.default_branch
-        result = await manager.run(["git", "checkout", default_branch], cwd=worktree_path)
-        if not result["success"]:
-            raise Exception(f"Failed to checkout default branch: {result['output']}")
+        current = await manager.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root)
+        if not current["success"]:
+            raise Exception(f"Failed to get current branch: {current['output']}")
+        if current["output"].strip() != default_branch:
+            result = await manager.run(["git", "checkout", default_branch], cwd=repo_root)
+            if not result["success"]:
+                raise Exception(f"Failed to checkout default branch: {result['output']}")
 
-        # Merge the task branch
+        # Merge the task branch into default branch
         result = await manager.run(
             ["git", "merge", "--no-ff", branch_name],
-            cwd=worktree_path,
+            cwd=repo_root,
         )
         if not result["success"]:
             raise Exception(f"Failed to merge branch: {result['output']}")
@@ -768,6 +777,11 @@ class ExecutionLoop:
                 logger.error(f"Failed to stage changes in worktree: {result['output']}")
                 return
 
+            status = await manager.run(["git", "status", "--porcelain"], cwd=workdir)
+            if status["success"] and not status["output"].strip():
+                logger.info("No changes to commit in worktree; skipping commit")
+                return
+
             # Commit
             commit_message = self._generate_commit_message(task_id, task)
             result = await manager.run(
@@ -782,6 +796,9 @@ class ExecutionLoop:
         else:
             # Stage all changes
             changed_files = await self.git_ops.list_files_changed()
+            if not changed_files:
+                logger.info("No changes to commit in repo; skipping commit")
+                return
             await self.git_ops.add(changed_files)
 
             # Commit
