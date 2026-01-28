@@ -78,3 +78,9 @@ fi
 
 echo ""
 echo "Done. Try: autopilot -h"
+
+# Ensure global shim if possible
+PIPX_BIN="${HOME}/.local/bin"
+if [[ -x "${PIPX_BIN}/autopilot" && -w "/usr/local/bin" ]]; then
+  ln -sf "${PIPX_BIN}/autopilot" /usr/local/bin/autopilot
+fi
