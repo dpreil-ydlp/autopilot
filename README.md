@@ -152,10 +152,12 @@ safety:
 reviewer:
   mode: codex_cli  # or openai_api
   model: null      # optional; uses OPENAI_MODEL if openai_api
+  disable_mcp: true
 
 planner:
   mode: codex_cli  # or openai_api
   model: null      # optional; uses OPENAI_MODEL if openai_api
+  disable_mcp: true
 
 builder:
   cli_path: claude

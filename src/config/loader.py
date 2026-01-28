@@ -95,10 +95,12 @@ def create_default_config(config_path: Path) -> None:
             "mode": "codex_cli",
             "model": None,
             "max_retries": 1,
+            "disable_mcp": True,
         },
         "planner": {
             "mode": "codex_cli",
             "model": None,
+            "disable_mcp": True,
         },
         "builder": {
             "cli_path": "claude",

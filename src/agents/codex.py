@@ -26,6 +26,8 @@ class CodexAgent(BaseAgent):
         self.model = config.get("model") or os.environ.get("OPENAI_MODEL")
         self.api_key_env = config.get("api_key_env", "OPENAI_API_KEY")
         self.json_schema_path = config.get("json_schema_path")
+        self.disable_mcp = config.get("disable_mcp", True)
+        self.codex_overrides = config.get("codex_overrides", [])
 
     async def execute(
         self,
@@ -241,9 +243,10 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
         try:
             # Assuming codex CLI exists
             manager = SubprocessManager(timeout_sec=timeout_sec)
-            command = ["codex", "exec", prompt]
-            if self.json_schema_path:
-                command = ["codex", "exec", "--output-schema", self.json_schema_path, prompt]
+            command = self._build_codex_command(
+                prompt=prompt,
+                schema_path=self.json_schema_path,
+            )
             result = await manager.run(command, cwd=work_dir)
             try:
                 return self._parse_review_json(result["output"])
@@ -284,7 +287,7 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
         """Plan using Codex CLI."""
         try:
             manager = SubprocessManager(timeout_sec=timeout_sec)
-            result = await manager.run(["codex", "exec", prompt], cwd=work_dir)
+            result = await manager.run(self._build_codex_command(prompt), cwd=work_dir)
             try:
                 return self._parse_plan_json(result["output"])
             except AgentError:
@@ -324,7 +327,7 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
         """Generate UAT using Codex CLI."""
         try:
             manager = SubprocessManager(timeout_sec=timeout_sec)
-            result = await manager.run(["codex", "exec", prompt], cwd=work_dir)
+            result = await manager.run(self._build_codex_command(prompt), cwd=work_dir)
             if result["success"]:
                 return result["output"]
             if result["output"].strip():
@@ -371,6 +374,22 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
             raise AgentError(f"Failed to parse review JSON: {e}")
 
         raise AgentError("No JSON found in review output")
+
+    def _build_codex_command(self, prompt: str, schema_path: Optional[str] = None) -> list[str]:
+        """Build codex exec command with optional config overrides."""
+        command = ["codex", "exec"]
+        if schema_path:
+            command.extend(["--output-schema", schema_path])
+
+        overrides = list(self.codex_overrides)
+        if self.disable_mcp and not any(o.startswith("mcp_servers") for o in overrides):
+            overrides.append("mcp_servers={}")
+
+        for override in overrides:
+            command.extend(["-c", override])
+
+        command.append(prompt)
+        return command
 
     def _parse_plan_json(self, output: str) -> dict:
         """Parse plan JSON from output."""

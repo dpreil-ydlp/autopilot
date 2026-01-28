@@ -65,6 +65,10 @@ class ReviewerConfig(BaseModel):
     )
     api_key_env: Optional[str] = Field(default=None, description="API key env var name")
     max_retries: int = Field(default=1, description="Max review retries")
+    disable_mcp: bool = Field(
+        default=True,
+        description="Disable MCP server startup for Codex CLI runs",
+    )
     json_schema_path: str = Field(default="schemas/review.json", description="Review schema path")
 
 
@@ -77,6 +81,10 @@ class PlannerConfig(BaseModel):
         description="Model for openai_api mode (falls back to OPENAI_MODEL)",
     )
     api_key_env: Optional[str] = Field(default=None, description="API key env var name")
+    disable_mcp: bool = Field(
+        default=True,
+        description="Disable MCP server startup for Codex CLI runs",
+    )
     json_schema_path: str = Field(default="schemas/plan.json", description="Plan schema path")
 
 
