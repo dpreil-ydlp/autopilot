@@ -159,7 +159,7 @@ planner:
 
 builder:
   cli_path: claude
-  permission_mode: dontAsk
+  permission_mode: bypassPermissions
   stream_output: true
   stream_log_interval_sec: 1.5
   system_prompt: null
