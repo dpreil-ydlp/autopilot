@@ -90,6 +90,7 @@ lint: ruff check .
 Notes:
 - If a task omits **Validation Commands**, Autopilot will use the defaults from `.autopilot/config.yml`.
 - Pytest "no tests ran" can be treated as success via `loop.allow_no_tests`.
+ - If a task omits **UAT** in Validation Commands, Autopilot will use the default `commands.uat` from `.autopilot/config.yml`.
  - Plan/review runs use an isolated Codex profile (no MCP servers) and may override the Codex model; see config below.
 
 ### 2. Run Autopilot

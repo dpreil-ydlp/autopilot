@@ -786,8 +786,10 @@ class ExecutionLoop:
 
         workdir = workdir or self.config.repo.root
 
-        # Check if UAT command exists
+        # Check if UAT command exists (task override or repo default)
         uat_command = task.validation_commands.get("uat")
+        if uat_command is None or uat_command == "":
+            uat_command = self.config.commands.uat
         if not uat_command:
             logger.info("No UAT command configured, skipping UAT generation")
             return True
@@ -874,6 +876,8 @@ class ExecutionLoop:
 
         try:
             uat_command = task.validation_commands.get("uat")
+            if uat_command is None or uat_command == "":
+                uat_command = self.config.commands.uat
             if not uat_command:
                 logger.info("No UAT command configured, skipping")
                 return True
@@ -1027,9 +1031,11 @@ class ExecutionLoop:
             )
 
         violations: list[str] = []
+        violation_codes: dict[str, str] = {}
         for line in status["output"].splitlines():
             if not line.strip():
                 continue
+            code = line[:2]
             path = extract_path(line)
             if not path:
                 continue
@@ -1037,12 +1043,69 @@ class ExecutionLoop:
                 continue
             if not in_scope(path):
                 violations.append(path)
+                violation_codes[path] = code
 
         if violations:
-            logger.error(
-                "Out-of-scope changes for %s: %s", task_id, ", ".join(sorted(set(violations)))
-            )
-            return False
+            # Heuristic fix: if the agent created a new root-level markdown artifact outside
+            # allowed paths, move it into the first allowed directory. This keeps strict scoping
+            # while preventing common "wrote docs to repo root" failures.
+            allowed_dirs: list[str] = []
+            for prefix in allowed_paths:
+                candidate = prefix.rstrip("/")
+                if candidate and (workdir / candidate).is_dir():
+                    allowed_dirs.append(candidate)
+
+            moved = False
+            if allowed_dirs:
+                for path in list(violations):
+                    if violation_codes.get(path) != "??":
+                        continue
+                    if "/" in path:
+                        continue
+                    if not path.lower().endswith(".md"):
+                        continue
+                    src = workdir / path
+                    if not src.exists():
+                        continue
+                    dst = workdir / allowed_dirs[0] / path
+                    if dst.exists():
+                        continue
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(src), str(dst))
+                    logger.warning(
+                        "Moved out-of-scope doc into scope for %s: %s -> %s",
+                        task_id,
+                        path,
+                        f"{allowed_dirs[0]}/{path}",
+                    )
+                    moved = True
+
+            if moved:
+                status = await manager.run(["git", "status", "--porcelain"], cwd=workdir)
+                if not status["success"]:
+                    logger.error("Failed to get git status after moving docs: %s", status["output"])
+                    return False
+
+                violations = []
+                violation_codes = {}
+                for line in status["output"].splitlines():
+                    if not line.strip():
+                        continue
+                    code = line[:2]
+                    path = extract_path(line)
+                    if not path or is_noise(path):
+                        continue
+                    if not in_scope(path):
+                        violations.append(path)
+                        violation_codes[path] = code
+
+            if violations:
+                logger.error(
+                    "Out-of-scope changes for %s: %s",
+                    task_id,
+                    ", ".join(sorted(set(violations))),
+                )
+                return False
 
         # Stage only in-scope paths (plus any already-staged housekeeping changes).
         if allowed_paths:
