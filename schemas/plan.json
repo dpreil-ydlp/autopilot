@@ -10,7 +10,20 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "title", "description"],
+        "required": [
+          "id",
+          "title",
+          "description",
+          "goal",
+          "acceptance_criteria",
+          "allowed_paths",
+          "validation_commands",
+          "depends_on",
+          "suggested_claude_skills",
+          "suggested_mcp_servers",
+          "suggested_subagents",
+          "estimated_complexity"
+        ],
         "properties": {
           "id": {
             "type": "string",
@@ -24,6 +37,47 @@
             "type": "string",
             "description": "Detailed task description"
           },
+          "goal": {
+            "type": "string",
+            "description": "Specific goal for this task"
+          },
+          "acceptance_criteria": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Checklist defining done"
+          },
+          "allowed_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Allowed path prefixes for this task"
+          },
+          "validation_commands": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["tests", "lint", "format", "uat"],
+            "properties": {
+              "tests": {
+                "type": ["string", "null"],
+                "description": "Optional tests command override"
+              },
+              "lint": {
+                "type": ["string", "null"],
+                "description": "Optional lint command override"
+              },
+              "format": {
+                "type": ["string", "null"],
+                "description": "Optional format command override"
+              },
+              "uat": {
+                "type": ["string", "null"],
+                "description": "Optional UAT command override"
+              }
+            }
+          },
           "depends_on": {
             "type": "array",
             "items": {
@@ -31,45 +85,35 @@
             },
             "description": "List of task IDs this task depends on"
           },
-          "dependencies": {
+          "suggested_claude_skills": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "List of task IDs this task depends on"
+            "description": "Recommended Claude Code skills for this task"
+          },
+          "suggested_mcp_servers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Recommended MCP servers for this task"
+          },
+          "suggested_subagents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Recommended subagents for this task"
+          },
+          "estimated_complexity": {
+            "type": "string",
+            "enum": ["low", "medium", "high", "critical"],
+            "description": "Estimated task complexity"
           }
         }
       },
       "description": "List of all tasks in the DAG"
-    },
-    "edges": {
-      "type": "array",
-      "items": {
-        "type": "array",
-        "items": {
-          "type": "string"
-        },
-        "minItems": 2,
-        "maxItems": 2
-      },
-      "description": "Dependency edges as [from, to] pairs"
-    },
-    "topo_order": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "Deprecated: Autopilot computes a deterministic topological order"
-    },
-    "parallel_batches": {
-      "type": "array",
-      "items": {
-        "type": "array",
-        "items": {
-          "type": "string"
-        }
-      },
-      "description": "Deprecated: Autopilot computes deterministic parallel batches"
     }
   }
 }
