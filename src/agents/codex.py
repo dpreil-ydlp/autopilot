@@ -487,10 +487,12 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
             else:
                 target_codex.mkdir(parents=True, exist_ok=True)
 
-            config_path = target_codex / "config.toml"
-            if config_path.exists():
-                config_text = config_path.read_text(encoding="utf-8")
-                config_path.write_text(self._strip_mcp_sections(config_text), encoding="utf-8")
+        # Always ensure MCP server blocks are stripped (idempotent). This avoids stale
+        # configs if the isolated home was created by an older Autopilot version.
+        config_path = target_codex / "config.toml"
+        if config_path.exists():
+            config_text = config_path.read_text(encoding="utf-8")
+            config_path.write_text(self._strip_mcp_sections(config_text), encoding="utf-8")
 
         return target_home
 
