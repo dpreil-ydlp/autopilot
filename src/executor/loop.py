@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 class ExecutionLoop:
     """Main execution loop for Autopilot."""
 
+    _AUTO_RESOLVE_CONFLICT_PREFIXES = ("logs/", ".autopilot/logs/", ".autopilot/artifacts/")
+
     def __init__(
         self,
         config: AutopilotConfig,
@@ -341,6 +343,7 @@ class ExecutionLoop:
             )
             if not build_success:
                 self.terminal.print_progress(f"Task {task_id}: Failed during coding")
+                self.machine.update_task(task_id, status="failed")
                 return False
 
             # Validate
@@ -390,12 +393,14 @@ class ExecutionLoop:
                 await self._merge_worktree_to_main(workdir, branch_name)
             except Exception as e:
                 logger.error(f"Failed to merge worktree changes: {e}")
+                self.machine.update_task(task_id, status="failed")
                 return False
 
         # Push if GitHub enabled (only from main repo)
         if self.github and workdir == self.config.repo.root:
             await self._push_step(task_id, task, iterations_used)
 
+        self.machine.update_task(task_id, status="done")
         self.terminal.print_progress(f"Task {task_id}: Completed")
         return True
 
@@ -414,6 +419,34 @@ class ExecutionLoop:
             lines.append("Acceptance Criteria:")
             lines.extend([f"- {item}" for item in task.acceptance_criteria])
         return "\n".join(lines)
+
+    async def _get_merge_conflicts(self, repo_root: Path) -> list[str]:
+        """Return list of merge conflict paths."""
+        manager = SubprocessManager(timeout_sec=30)
+        result = await manager.run(
+            ["git", "diff", "--name-only", "--diff-filter=U"],
+            cwd=repo_root,
+        )
+        if not result["success"]:
+            return []
+        return [line.strip() for line in result["output"].splitlines() if line.strip()]
+
+    def _all_conflicts_auto_resolvable(self, conflicts: list[str]) -> bool:
+        """Check if conflicts are safe to auto-resolve."""
+        for path in conflicts:
+            if path.startswith(self._AUTO_RESOLVE_CONFLICT_PREFIXES):
+                continue
+            if path.endswith(".log"):
+                continue
+            return False
+        return True
+
+    async def _auto_resolve_conflicts(self, repo_root: Path, conflicts: list[str]) -> None:
+        """Resolve conflicts by keeping main branch content."""
+        manager = SubprocessManager(timeout_sec=30)
+        for path in conflicts:
+            await manager.run(["git", "checkout", "--ours", "--", path], cwd=repo_root)
+            await manager.run(["git", "add", path], cwd=repo_root)
 
     async def _merge_worktree_to_main(self, worktree_path: Path, branch_name: str) -> None:
         """Merge worktree branch back to main branch.
@@ -441,7 +474,17 @@ class ExecutionLoop:
             cwd=repo_root,
         )
         if not result["success"]:
-            raise Exception(f"Failed to merge branch: {result['output']}")
+            conflicts = await self._get_merge_conflicts(repo_root)
+            if conflicts and self._all_conflicts_auto_resolvable(conflicts):
+                await self._auto_resolve_conflicts(repo_root, conflicts)
+                commit_result = await manager.run(
+                    ["git", "commit", "-m", f"Merge {branch_name} (auto-resolved logs)"],
+                    cwd=repo_root,
+                )
+                if not commit_result["success"]:
+                    raise Exception(f"Failed to finalize auto-merge: {commit_result['output']}")
+            else:
+                raise Exception(f"Failed to merge branch: {result['output']}")
 
         logger.info(f"Merged {branch_name} into {default_branch}")
 
@@ -809,6 +852,10 @@ class ExecutionLoop:
             # Commit in worktree
             manager = SubprocessManager(timeout_sec=30)
 
+            # Remove logs from tracking and clean ignored files
+            await manager.run(["git", "rm", "-r", "--cached", "--ignore-unmatch", "logs"], cwd=workdir)
+            await manager.run(["git", "clean", "-fdX"], cwd=workdir)
+
             # Stage all changes
             result = await manager.run(["git", "add", "."], cwd=workdir)
             if not result["success"]:
@@ -832,6 +879,11 @@ class ExecutionLoop:
 
             logger.info(f"Committed changes in worktree: {workdir}")
         else:
+            # Remove logs from tracking and clean ignored files
+            manager = SubprocessManager(timeout_sec=30)
+            await manager.run(["git", "rm", "-r", "--cached", "--ignore-unmatch", "logs"], cwd=workdir)
+            await manager.run(["git", "clean", "-fdX"], cwd=workdir)
+
             # Stage all changes
             changed_files = await self.git_ops.list_files_changed()
             if not changed_files:
