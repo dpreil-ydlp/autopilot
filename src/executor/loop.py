@@ -390,7 +390,11 @@ class ExecutionLoop:
         if workdir and workdir != self.config.repo.root:
             logger.info(f"Merging worktree changes back to main branch")
             try:
-                await self._merge_worktree_to_main(workdir, branch_name)
+                await self._merge_worktree_to_main(
+                    workdir,
+                    branch_name,
+                    allowed_paths=task.allowed_paths,
+                )
             except Exception as e:
                 logger.error(f"Failed to merge worktree changes: {e}")
                 self.machine.update_task(task_id, status="failed")
@@ -448,7 +452,30 @@ class ExecutionLoop:
             await manager.run(["git", "checkout", "--ours", "--", path], cwd=repo_root)
             await manager.run(["git", "add", path], cwd=repo_root)
 
-    async def _merge_worktree_to_main(self, worktree_path: Path, branch_name: str) -> None:
+    async def _resolve_conflicts_with_scope(
+        self,
+        repo_root: Path,
+        conflicts: list[str],
+        allowed_paths: list[str],
+    ) -> None:
+        """Resolve conflicts by scope: keep theirs in-scope, ours out-of-scope."""
+        manager = SubprocessManager(timeout_sec=30)
+        normalized = [p if p.endswith("/") else f"{p}/" for p in allowed_paths]
+
+        for path in conflicts:
+            in_scope = any(path.startswith(prefix) for prefix in normalized)
+            if in_scope:
+                await manager.run(["git", "checkout", "--theirs", "--", path], cwd=repo_root)
+            else:
+                await manager.run(["git", "checkout", "--ours", "--", path], cwd=repo_root)
+            await manager.run(["git", "add", path], cwd=repo_root)
+
+    async def _merge_worktree_to_main(
+        self,
+        worktree_path: Path,
+        branch_name: str,
+        allowed_paths: Optional[list[str]] = None,
+    ) -> None:
         """Merge worktree branch back to main branch.
 
         Args:
@@ -483,6 +510,14 @@ class ExecutionLoop:
                 )
                 if not commit_result["success"]:
                     raise Exception(f"Failed to finalize auto-merge: {commit_result['output']}")
+            elif conflicts and allowed_paths:
+                await self._resolve_conflicts_with_scope(repo_root, conflicts, allowed_paths)
+                commit_result = await manager.run(
+                    ["git", "commit", "-m", f"Merge {branch_name} (scope-resolved)"],
+                    cwd=repo_root,
+                )
+                if not commit_result["success"]:
+                    raise Exception(f"Failed to finalize scope merge: {commit_result['output']}")
             else:
                 raise Exception(f"Failed to merge branch: {result['output']}")
 
