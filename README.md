@@ -84,6 +84,10 @@ lint: ruff check .
 ```
 ```
 
+Notes:
+- If a task omits **Validation Commands**, Autopilot will use the defaults from `.autopilot/config.yml`.
+- Pytest "no tests ran" can be treated as success via `loop.allow_no_tests`.
+
 ### 2. Run Autopilot
 
 ```bash
@@ -115,6 +119,9 @@ autopilot unpause
 
 # Stop at safe boundary
 autopilot stop
+
+# Recover disk space / clean stale artifacts
+autopilot recover
 ```
 
 ## Configuration
@@ -142,6 +149,7 @@ loop:
   build_timeout_sec: 600
   validate_timeout_sec: 120
   review_timeout_sec: 180
+  allow_no_tests: true
 
 safety:
   allowed_paths: ["src/", "tests/"]
@@ -175,7 +183,7 @@ Tasks are Markdown files with structured sections:
 - **Acceptance Criteria**: Definition of done (checklist)
 - **Constraints**: Technical limitations or requirements
 - **Allowed Paths**: Restrict changes to specific directories
-- **Validation Commands**: Commands to verify implementation
+- **Validation Commands**: Commands to verify implementation (optional; defaults to config)
 - **User Acceptance Tests**: Manual UAT scenarios
 - **Notes**: Additional context
 
