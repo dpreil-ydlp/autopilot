@@ -4,7 +4,6 @@ import logging
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from ..utils.subprocess import SubprocessManager
 
@@ -17,7 +16,7 @@ class ValidationResult:
 
     command_type: str  # format, lint, tests, uat
     success: bool
-    exit_code: Optional[int]
+    exit_code: int | None
     output: str
     timed_out: bool = False
     stuck: bool = False
@@ -28,9 +27,9 @@ class UATResult:
     """Result of UAT execution."""
 
     success: bool
-    exit_code: Optional[int]
+    exit_code: int | None
     output: str
-    uat_file: Optional[Path]
+    uat_file: Path | None
     timed_out: bool = False
     stuck: bool = False
 
@@ -42,7 +41,7 @@ class ValidationRunner:
         self,
         work_dir: Path,
         timeout_sec: int = 120,
-        log_dir: Optional[Path] = None,
+        log_dir: Path | None = None,
         allow_no_tests: bool = True,
     ):
         """Initialize validation runner.
@@ -59,8 +58,8 @@ class ValidationRunner:
 
     async def run_format(
         self,
-        command: Optional[str],
-        timeout_sec: Optional[int] = None,
+        command: str | None,
+        timeout_sec: int | None = None,
     ) -> ValidationResult:
         """Run format command.
 
@@ -89,8 +88,8 @@ class ValidationRunner:
 
     async def run_lint(
         self,
-        command: Optional[str],
-        timeout_sec: Optional[int] = None,
+        command: str | None,
+        timeout_sec: int | None = None,
     ) -> ValidationResult:
         """Run lint command.
 
@@ -120,7 +119,7 @@ class ValidationRunner:
     async def run_tests(
         self,
         command: str,
-        timeout_sec: Optional[int] = None,
+        timeout_sec: int | None = None,
     ) -> ValidationResult:
         """Run test command.
 
@@ -146,8 +145,8 @@ class ValidationRunner:
 
     async def run_uat(
         self,
-        command: Optional[str],
-        timeout_sec: Optional[int] = None,
+        command: str | None,
+        timeout_sec: int | None = None,
     ) -> UATResult:
         """Run UAT command.
 
@@ -185,8 +184,8 @@ class ValidationRunner:
 
     async def run_all(
         self,
-        commands: dict[str, Optional[str]],
-        timeout_sec: Optional[int] = None,
+        commands: dict[str, str | None],
+        timeout_sec: int | None = None,
     ) -> dict[str, ValidationResult]:
         """Run all validation commands in order.
 

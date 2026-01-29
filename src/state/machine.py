@@ -2,11 +2,11 @@
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 from .persistence import (
     OrchestratorState,
     OrchestratorStateModel,
+    TaskState,
     save_state,
 )
 
@@ -87,6 +87,7 @@ class OrchestratorMachine:
         existing = None
         if self.state_path.exists():
             from .persistence import load_state
+
             existing = load_state(self.state_path)
             if existing:
                 logger.info(f"Resuming run {existing.run_id} in state {existing.state}")
@@ -94,6 +95,7 @@ class OrchestratorMachine:
 
         # Create new state
         from .persistence import generate_run_id
+
         new_state = OrchestratorStateModel(
             run_id=generate_run_id(),
             state=OrchestratorState.INIT,
@@ -121,8 +123,8 @@ class OrchestratorMachine:
     def transition(
         self,
         new_state: OrchestratorState,
-        error_message: Optional[str] = None,
-        error_context: Optional[dict] = None,
+        error_message: str | None = None,
+        error_context: dict | None = None,
     ) -> OrchestratorStateModel:
         """Execute state transition.
 
@@ -162,8 +164,9 @@ class OrchestratorMachine:
             **updates: Fields to update
         """
         if task_id not in self.state.tasks:
-            from .persistence import TaskState
-            self.state.tasks[task_id] = TaskState(task_id=task_id, title=updates.get("title", task_id))
+            self.state.tasks[task_id] = TaskState(
+                task_id=task_id, title=updates.get("title", task_id)
+            )
 
         task = self.state.tasks[task_id]
         for key, value in updates.items():
@@ -172,7 +175,7 @@ class OrchestratorMachine:
         task.updated_at = self.state.updated_at
         save_state(self.state, self.state_path)
 
-    def get_task(self, task_id: str) -> Optional["TaskState"]:
+    def get_task(self, task_id: str) -> TaskState | None:
         """Get task state.
 
         Args:

@@ -4,7 +4,6 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 from ..utils.git import GitOps
 
@@ -44,7 +43,7 @@ class RetryConfig:
 class RetryPolicy:
     """Manage retry policies for different operations."""
 
-    def __init__(self, config: Optional[RetryConfig] = None):
+    def __init__(self, config: RetryConfig | None = None):
         """Initialize retry policy.
 
         Args:
@@ -249,7 +248,7 @@ class RecoveryManager:
     def __init__(
         self,
         git_ops: GitOps,
-        retry_config: Optional[RetryConfig] = None,
+        retry_config: RetryConfig | None = None,
     ):
         """Initialize recovery manager.
 

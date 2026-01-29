@@ -3,9 +3,9 @@
 import asyncio
 import logging
 import shlex
-from datetime import datetime, timedelta
+from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
-from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ class SubprocessError(Exception):
     def __init__(
         self,
         message: str,
-        exit_code: Optional[int] = None,
+        exit_code: int | None = None,
         timed_out: bool = False,
         stuck: bool = False,
     ):
@@ -32,8 +32,8 @@ class SubprocessManager:
     def __init__(
         self,
         timeout_sec: int,
-        stuck_no_output_sec: Optional[int] = None,
-        log_dir: Optional[Path] = None,
+        stuck_no_output_sec: int | None = None,
+        log_dir: Path | None = None,
     ):
         """Initialize subprocess manager.
 
@@ -49,10 +49,10 @@ class SubprocessManager:
     async def run(
         self,
         command: list[str],
-        cwd: Optional[Path] = None,
-        env: Optional[dict[str, str]] = None,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
         capture_output: bool = True,
-        on_output_line: Optional[Callable[[str], None]] = None,
+        on_output_line: Callable[[str], None] | None = None,
     ) -> dict:
         """Run command with timeout and stuck detection.
 
@@ -151,7 +151,9 @@ class SubprocessManager:
                     output = "".join(output_lines)
                     exit_code = None
 
-                logger.info(f"Command completed: exit_code={exit_code}, timed_out={timed_out}, stuck={stuck}")
+                logger.info(
+                    f"Command completed: exit_code={exit_code}, timed_out={timed_out}, stuck={stuck}"
+                )
 
             else:
                 # No output capture, just wait with timeout
@@ -160,7 +162,7 @@ class SubprocessManager:
                     output = ""
                     timed_out = False
                     stuck = False
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     process.kill()
                     await process.wait()
                     timed_out = True
@@ -176,7 +178,7 @@ class SubprocessManager:
                 "stuck": stuck,
             }
 
-        except FileNotFoundError as e:
+        except FileNotFoundError:
             raise SubprocessError(f"Command not found: {command[0]}")
         except Exception as e:
             raise SubprocessError(f"Subprocess error: {e}")
@@ -211,8 +213,8 @@ class SubprocessManager:
         process: asyncio.subprocess.Process,
         last_output_time: dict[str, datetime],
         output_lines: list[str],
-        log_path: Optional[Path] = None,
-        on_output_line: Optional[Callable[[str], None]] = None,
+        log_path: Path | None = None,
+        on_output_line: Callable[[str], None] | None = None,
     ) -> None:
         """Read process output with stuck detection.
 
@@ -262,8 +264,8 @@ class SubprocessManager:
         stream: asyncio.StreamReader,
         last_output_time: dict[str, datetime],
         output_lines: list[str],
-        log_file: Optional[object] = None,
-        on_output_line: Optional[Callable[[str], None]] = None,
+        log_file: object | None = None,
+        on_output_line: Callable[[str], None] | None = None,
     ) -> None:
         """Read from a single stream.
 

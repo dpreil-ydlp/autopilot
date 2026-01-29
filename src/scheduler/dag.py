@@ -2,13 +2,13 @@
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+from ..state.persistence import WorkerState
 from ..tasks.plan import TaskDAG, compute_ready_set
-from ..state.persistence import TaskState, WorkerState
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +30,9 @@ class SchedulerTask:
 
     task_id: str
     status: TaskStatus = TaskStatus.PENDING
-    worker_id: Optional[str] = None
+    worker_id: str | None = None
     retry_count: int = 0
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
 
 @dataclass
@@ -73,7 +73,7 @@ class WorkerPool:
         self.max_workers = max_workers
         self.repo_root = repo_root
         self.git_ops = git_ops
-        self.workers: dict[str, "Worker"] = {}
+        self.workers: dict[str, Worker] = {}
 
     async def dispatch(self, task_id: str) -> str:
         """Dispatch task to an available worker.
@@ -101,7 +101,7 @@ class WorkerPool:
             return worker_id
 
         # Wait for available worker
-        logger.info(f"All workers busy, waiting for available worker...")
+        logger.info("All workers busy, waiting for available worker...")
         while True:
             await asyncio.sleep(0.1)
             for worker_id, worker in self.workers.items():
@@ -110,7 +110,7 @@ class WorkerPool:
                     logger.info(f"Dispatched {task_id} to worker {worker_id}")
                     return worker_id
 
-    def try_dispatch(self, task_id: str) -> Optional[str]:
+    def try_dispatch(self, task_id: str) -> str | None:
         """Try to dispatch task without waiting.
 
         Args:
@@ -181,10 +181,10 @@ class Worker:
         self.worker_id = worker_id
         self.repo_root = repo_root
         self.git_ops = git_ops
-        self.current_task: Optional[str] = None
+        self.current_task: str | None = None
         self.state = WorkerState.TASK_INIT
-        self.worktree_path: Optional[Path] = None
-        self.branch_name: Optional[str] = None
+        self.worktree_path: Path | None = None
+        self.branch_name: str | None = None
 
     def assign(self, task_id: str) -> None:
         """Assign task to worker.
@@ -292,7 +292,9 @@ class Worker:
         try:
             # Setup isolated environment
             worktree_path = await self.setup_worktree(branch_name)
-            logger.info(f"Worker {self.worker_id} executing task {self.current_task} in {worktree_path}")
+            logger.info(
+                f"Worker {self.worker_id} executing task {self.current_task} in {worktree_path}"
+            )
 
             # Execute task in worktree
             success = await executor._execute_task(task, scheduler, workdir=worktree_path)
@@ -327,7 +329,7 @@ class DAGScheduler:
         self,
         dag: TaskDAG,
         max_workers: int = 1,
-        work_dir: Optional[Path] = None,
+        work_dir: Path | None = None,
         git_ops=None,
     ):
         """Initialize DAG scheduler.
@@ -345,15 +347,18 @@ class DAGScheduler:
 
         # Task tracking
         self.tasks: dict[str, SchedulerTask] = {
-            task_id: SchedulerTask(task_id=task_id)
-            for task_id in dag.tasks
+            task_id: SchedulerTask(task_id=task_id) for task_id in dag.tasks
         }
 
         # Completed tasks
         self.completed: set[str] = set()
 
         # Worker pool
-        self.pool = WorkerPool(max_workers, work_dir, git_ops) if git_ops else WorkerPool(max_workers, work_dir, None)
+        self.pool = (
+            WorkerPool(max_workers, work_dir, git_ops)
+            if git_ops
+            else WorkerPool(max_workers, work_dir, None)
+        )
 
     def get_stats(self) -> SchedulerStats:
         """Get scheduler statistics.
@@ -394,9 +399,7 @@ class DAGScheduler:
                 # Check if blocked by dependencies
                 deps = {dep for (dep, to) in self.dag.edges if to == task_id}
                 if any(
-                    self.tasks[dep].status == TaskStatus.FAILED
-                    for dep in deps
-                    if dep in self.tasks
+                    self.tasks[dep].status == TaskStatus.FAILED for dep in deps if dep in self.tasks
                 ):
                     task.status = TaskStatus.BLOCKED
                 else:
@@ -409,11 +412,7 @@ class DAGScheduler:
             List of task IDs
         """
         self.update_task_states()
-        return [
-            task_id
-            for task_id, task in self.tasks.items()
-            if task.status == TaskStatus.READY
-        ]
+        return [task_id for task_id, task in self.tasks.items() if task.status == TaskStatus.READY]
 
     def mark_task_running(self, task_id: str, worker_id: str) -> None:
         """Mark task as running.
@@ -467,10 +466,7 @@ class DAGScheduler:
         Returns:
             True if any tasks are FAILED
         """
-        return any(
-            task.status == TaskStatus.FAILED
-            for task in self.tasks.values()
-        )
+        return any(task.status == TaskStatus.FAILED for task in self.tasks.values())
 
     def get_failed_tasks(self) -> list[str]:
         """Get list of failed task IDs.
@@ -478,8 +474,4 @@ class DAGScheduler:
         Returns:
             List of task IDs
         """
-        return [
-            task_id
-            for task_id, task in self.tasks.items()
-            if task.status == TaskStatus.FAILED
-        ]
+        return [task_id for task_id, task in self.tasks.items() if task.status == TaskStatus.FAILED]

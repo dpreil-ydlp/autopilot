@@ -4,9 +4,8 @@ import logging
 import re
 import shutil
 from pathlib import Path
-from typing import Optional
 
-from .subprocess import SubprocessManager, SubprocessError
+from .subprocess import SubprocessError, SubprocessManager
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +81,7 @@ class GitOps:
 
         return branch or "main"
 
-    async def create_branch(self, branch_name: str, start_point: Optional[str] = None) -> None:
+    async def create_branch(self, branch_name: str, start_point: str | None = None) -> None:
         """Create new branch.
 
         Args:
@@ -106,7 +105,7 @@ class GitOps:
         await self.run_git(["checkout", ref])
         logger.info(f"Checked out: {ref}")
 
-    async def get_diff(self, cached: bool = False, paths: Optional[list[str]] = None) -> str:
+    async def get_diff(self, cached: bool = False, paths: list[str] | None = None) -> str:
         """Get git diff.
 
         Args:
@@ -272,10 +271,10 @@ class GitOps:
         """
         result = await self.run_git(["diff", "--shortstat"])
         # Parse output like " 3 files changed, 15 insertions(+), 5 deletions(-)"
-        match = re.search(r'(\d+) insertions?', result["output"])
+        match = re.search(r"(\d+) insertions?", result["output"])
         insertions = int(match.group(1)) if match else 0
 
-        match = re.search(r'(\d+) deletions?', result["output"])
+        match = re.search(r"(\d+) deletions?", result["output"])
         deletions = int(match.group(1)) if match else 0
 
         return insertions + deletions

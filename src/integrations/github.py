@@ -2,8 +2,6 @@
 
 import logging
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional
 
 from ..utils.git import GitOps
 from ..utils.subprocess import SubprocessManager
@@ -16,9 +14,9 @@ class PRResult:
     """Result of PR creation."""
 
     success: bool
-    pr_url: Optional[str] = None
-    pr_number: Optional[int] = None
-    error_message: Optional[str] = None
+    pr_url: str | None = None
+    pr_number: int | None = None
+    error_message: str | None = None
 
 
 class GitHubIntegration:
@@ -66,7 +64,7 @@ class GitHubIntegration:
                 retry=2,
             )
 
-            logger.info(f"Branch pushed successfully")
+            logger.info("Branch pushed successfully")
             return {"success": True, "output": result["output"]}
 
         except Exception as e:
@@ -78,7 +76,7 @@ class GitHubIntegration:
         branch_name: str,
         title: str,
         description: str,
-        labels: Optional[list[str]] = None,
+        labels: list[str] | None = None,
     ) -> PRResult:
         """Create pull request.
 
@@ -121,7 +119,7 @@ class GitHubIntegration:
         branch_name: str,
         title: str,
         description: str,
-        labels: Optional[list[str]],
+        labels: list[str] | None,
     ) -> PRResult:
         """Create PR using gh CLI.
 
@@ -136,11 +134,17 @@ class GitHubIntegration:
         """
         # Build gh pr create command
         args = [
-            "gh", "pr", "create",
-            "--base", self.base_branch,
-            "--head", branch_name,
-            "--title", title,
-            "--body", description,
+            "gh",
+            "pr",
+            "create",
+            "--base",
+            self.base_branch,
+            "--head",
+            branch_name,
+            "--title",
+            title,
+            "--body",
+            description,
         ]
 
         # Add labels if provided
@@ -202,16 +206,21 @@ class GitHubIntegration:
         # Get remote URL
         try:
             import asyncio
-            result = asyncio.run(self.git_ops.run_git(
-                ["remote", "get-url", self.remote],
-                check=False,
-            ))
+
+            result = asyncio.run(
+                self.git_ops.run_git(
+                    ["remote", "get-url", self.remote],
+                    check=False,
+                )
+            )
             remote_url = result["output"].strip()
 
             # Convert to HTTPS web URL
             if remote_url.startswith("git@"):
                 # git@github.com:user/repo.git
-                remote_url = remote_url.replace("git@", "https://").replace(":", "/").replace(".git", "")
+                remote_url = (
+                    remote_url.replace("git@", "https://").replace(":", "/").replace(".git", "")
+                )
             elif remote_url.startswith("git://"):
                 remote_url = remote_url.replace("git://", "https://")
             elif remote_url.startswith("https://"):
@@ -239,7 +248,7 @@ class GitHubIntegration:
                 error_message=f"Could not create PR automatically: {e}",
             )
 
-    def _extract_pr_url(self, output: str) -> Optional[str]:
+    def _extract_pr_url(self, output: str) -> str | None:
         """Extract PR URL from gh output.
 
         Args:
@@ -254,7 +263,7 @@ class GitHubIntegration:
         match = re.search(r"https://github\.com/[^/]+/[^/]+/pull/\d+", output)
         return match.group(0) if match else None
 
-    def _extract_pr_number(self, output: str) -> Optional[int]:
+    def _extract_pr_number(self, output: str) -> int | None:
         """Extract PR number from gh output.
 
         Args:
@@ -312,27 +321,29 @@ class GitHubIntegration:
         for i, criterion in enumerate(acceptance_criteria, 1):
             lines.append(f"- [ ] {criterion}")
 
-        lines.extend([
-            "",
-            "## Changes",
-            f"- Files changed: {files_changed}",
-            f"- Lines changed: {lines_changed}",
-            f"- Iterations: {iterations}",
-            "",
-            "## Validation",
-            "- ✅ Tests passed",
-            "- ✅ Code reviewed",
-            "- ✅ UAT completed",
-            "",
-            "## Artifacts",
-            "- Plan: `.autopilot/plan/plan.json`",
-            "- State: `.autopilot/state.json`",
-            "- Logs: `.autopilot/logs/`",
-            "",
-            "---",
-            "",
-            "*This PR was created automatically by Autopilot*",
-            "",
-        ])
+        lines.extend(
+            [
+                "",
+                "## Changes",
+                f"- Files changed: {files_changed}",
+                f"- Lines changed: {lines_changed}",
+                f"- Iterations: {iterations}",
+                "",
+                "## Validation",
+                "- ✅ Tests passed",
+                "- ✅ Code reviewed",
+                "- ✅ UAT completed",
+                "",
+                "## Artifacts",
+                "- Plan: `.autopilot/plan/plan.json`",
+                "- State: `.autopilot/state.json`",
+                "- Logs: `.autopilot/logs/`",
+                "",
+                "---",
+                "",
+                "*This PR was created automatically by Autopilot*",
+                "",
+            ]
+        )
 
         return "\n".join(lines)

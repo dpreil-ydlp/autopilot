@@ -1,15 +1,14 @@
 """Unit tests for scheduler."""
 
-import pytest
 from pathlib import Path
 
 from src.scheduler.dag import (
-    TaskStatus,
-    SchedulerTask,
+    DAGScheduler,
     SchedulerStats,
+    SchedulerTask,
+    TaskStatus,
     Worker,
     WorkerPool,
-    DAGScheduler,
 )
 from src.tasks.plan import TaskDAG
 

@@ -2,7 +2,6 @@
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional
 
 
 class AgentError(Exception):
@@ -27,7 +26,7 @@ class BaseAgent(ABC):
         self,
         prompt: str,
         timeout_sec: int,
-        work_dir: Optional[Path] = None,
+        work_dir: Path | None = None,
     ) -> dict:
         """Execute agent with prompt.
 
@@ -55,8 +54,8 @@ class BaseAgent(ABC):
         diff: str,
         validation_output: str,
         timeout_sec: int,
-        work_dir: Optional[Path] = None,
-        context: Optional[str] = None,
+        work_dir: Path | None = None,
+        context: str | None = None,
     ) -> dict:
         """Review code changes.
 
@@ -79,8 +78,8 @@ class BaseAgent(ABC):
         self,
         plan_content: str,
         timeout_sec: int,
-        work_dir: Optional[Path] = None,
-        context: Optional[str] = None,
+        work_dir: Path | None = None,
+        context: str | None = None,
     ) -> dict:
         """Generate task DAG from plan.
 
@@ -104,8 +103,8 @@ class BaseAgent(ABC):
         task_content: str,
         diff: str,
         timeout_sec: int,
-        work_dir: Optional[Path] = None,
-        context: Optional[str] = None,
+        work_dir: Path | None = None,
+        context: str | None = None,
     ) -> str:
         """Generate UAT cases.
 

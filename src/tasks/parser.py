@@ -4,7 +4,6 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +48,7 @@ def parse_task_file(task_path: Path) -> ParsedTask:
     # Generate task_id from filename
     task_id = task_path.stem
 
-    with open(task_path, "r") as f:
+    with open(task_path) as f:
         content = f.read()
 
     # Parse title from first heading

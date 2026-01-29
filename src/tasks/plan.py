@@ -2,9 +2,9 @@
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Callable
 
 from ..agents.codex import CodexAgent
 from .parser import ParsedTask, parse_task_file
@@ -31,8 +31,8 @@ class PlanExpanderError(Exception):
 async def expand_plan(
     plan_path: Path,
     planner_config: dict,
-    output_dir: Optional[Path] = None,
-    progress_callback: Optional[Callable[[str], None]] = None,
+    output_dir: Path | None = None,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> TaskDAG:
     """Expand plan file into task DAG.
 
@@ -50,7 +50,7 @@ async def expand_plan(
     if not plan_path.exists():
         raise PlanExpanderError(f"Plan file not found: {plan_path}")
 
-    with open(plan_path, "r") as f:
+    with open(plan_path) as f:
         plan_content = f.read()
 
     # Invoke Codex agent for planning
@@ -72,9 +72,16 @@ async def expand_plan(
 
         # Extract DAG structure from plan result
         tasks_data = plan_result.get("tasks", [])
-        edges = plan_result.get("edges", [])
-        topo_order = plan_result.get("topo_order", [])
-        parallel_batches = plan_result.get("parallel_batches", [])
+        raw_edges = plan_result.get("edges", [])
+
+        # Persist raw output for debugging.
+        raw_artifact = Path(".autopilot/plan/dag_raw.json")
+        raw_artifact.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(raw_artifact, "w") as f:
+                json.dump(plan_result, f, indent=2)
+        except Exception:
+            pass
 
         # Set output directory
         if output_dir is None:
@@ -82,7 +89,8 @@ async def expand_plan(
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Parse and materialize tasks
-        tasks = {}
+        tasks: dict[str, ParsedTask] = {}
+        assigned_ids: list[str] = []
         for task_data in tasks_data:
             if not isinstance(task_data, dict):
                 raise PlanExpanderError(f"Invalid task entry in plan output: {task_data}")
@@ -90,6 +98,8 @@ async def expand_plan(
             if not task_id:
                 task_id = f"task-{len(tasks) + 1}"
                 logger.warning(f"Plan task missing id; assigning {task_id}")
+                task_data["id"] = task_id
+            assigned_ids.append(task_id)
             description = task_data.get("description") or task_data.get("goal") or ""
             title = task_data.get("title") or (description if description else f"Task {task_id}")
             dependencies = task_data.get("depends_on") or task_data.get("dependencies", [])
@@ -101,6 +111,13 @@ async def expand_plan(
                 )
                 validation_commands = {}
 
+            # Normalize dependencies list
+            if isinstance(dependencies, str):
+                dependencies = [dependencies]
+            if not isinstance(dependencies, list):
+                dependencies = []
+            dependencies = [str(dep).strip() for dep in dependencies if str(dep).strip()]
+
             # Extract enriched fields with defaults
             goal = task_data.get("goal", description)
             acceptance_criteria = task_data.get("acceptance_criteria", [])
@@ -108,19 +125,20 @@ async def expand_plan(
             if isinstance(raw_allowed_paths, list) and raw_allowed_paths:
                 allowed_paths = [str(p) for p in raw_allowed_paths if str(p).strip()]
             else:
-                allowed_paths = _infer_allowed_paths(title, description, plan_path.parent) or ["src/", "tests/"]
+                allowed_paths = _infer_allowed_paths(title, description, plan_path.parent) or [
+                    "src/",
+                    "tests/",
+                ]
             skills_used = (
                 task_data.get("suggested_claude_skills")
                 or task_data.get("suggested_skills")
                 or task_data.get("skills_used", [])
             )
-            mcp_servers_used = (
-                task_data.get("suggested_mcp_servers")
-                or task_data.get("mcp_servers_used", [])
+            mcp_servers_used = task_data.get("suggested_mcp_servers") or task_data.get(
+                "mcp_servers_used", []
             )
-            subagents_used = (
-                task_data.get("suggested_subagents")
-                or task_data.get("subagents_used", [])
+            subagents_used = task_data.get("suggested_subagents") or task_data.get(
+                "subagents_used", []
             )
             estimated_complexity = task_data.get("estimated_complexity", "medium")
 
@@ -149,9 +167,23 @@ async def expand_plan(
             parsed_task = parse_task_file(task_path)
             tasks[task_id] = parsed_task
 
-            logger.info(f"Materialized task: {task_id} - {title} ({estimated_complexity} complexity)")
+            logger.info(
+                f"Materialized task: {task_id} - {title} ({estimated_complexity} complexity)"
+            )
             if progress_callback:
                 progress_callback(f"Task created: {task_id} - {title}")
+
+        task_id_list = list(tasks.keys())
+        task_id_set = set(task_id_list)
+
+        edges = _merge_edges(raw_edges, tasks_data, task_id_set)
+        topo_order, parallel_batches, cycle_nodes = _toposort_batches(task_id_list, edges)
+        if cycle_nodes:
+            raise PlanExpanderError(
+                "Cycle detected in planned task dependencies: "
+                + ", ".join(sorted(cycle_nodes)[:20])
+                + (" ..." if len(cycle_nodes) > 20 else "")
+            )
 
         # Write DAG artifact
         dag_artifact = Path(".autopilot/plan/dag.json")
@@ -238,56 +270,70 @@ def _generate_task_file(
     ]
 
     # Goal section
-    lines.extend([
-        "## Goal",
-        goal or description,
-        "",
-    ])
+    lines.extend(
+        [
+            "## Goal",
+            goal or description,
+            "",
+        ]
+    )
 
     # Dependencies section
     if dependencies:
-        lines.extend([
-            "## Dependencies",
-            f"This task depends on: {', '.join(dependencies)}",
-            "",
-        ])
+        lines.extend(
+            [
+                "## Dependencies",
+                f"This task depends on: {', '.join(dependencies)}",
+                "",
+            ]
+        )
 
     # Acceptance criteria section (always present)
-    lines.extend([
-        "## Acceptance Criteria",
-    ])
+    lines.extend(
+        [
+            "## Acceptance Criteria",
+        ]
+    )
     if acceptance_criteria:
         for i, criterion in enumerate(acceptance_criteria, 1):
             lines.append(f"- [ ] {criterion}")
     else:
-        lines.extend([
-            "- [ ] Task completed according to description",
-            "- [ ] Code follows project conventions",
-            "- [ ] Tests pass",
-        ])
+        lines.extend(
+            [
+                "- [ ] Task completed according to description",
+                "- [ ] Code follows project conventions",
+                "- [ ] Tests pass",
+            ]
+        )
     lines.append("")
 
     # Constraints section
-    lines.extend([
-        "## Constraints",
-        "- Follow existing code patterns",
-        "- Maintain backward compatibility",
-        "",
-    ])
+    lines.extend(
+        [
+            "## Constraints",
+            "- Follow existing code patterns",
+            "- Maintain backward compatibility",
+            "",
+        ]
+    )
 
     # Allowed paths section
-    lines.extend([
-        "## Allowed Paths",
-    ])
+    lines.extend(
+        [
+            "## Allowed Paths",
+        ]
+    )
     for path in allowed_paths:
         lines.append(f"- {path}")
     lines.append("")
 
     # Enriched metadata section
     if skills_used or mcp_servers_used or subagents_used:
-        lines.extend([
-            "## Agent Guidance",
-        ])
+        lines.extend(
+            [
+                "## Agent Guidance",
+            ]
+        )
 
         if skills_used:
             lines.append(f"**Recommended Skills:** {', '.join(skills_used)}")
@@ -307,22 +353,28 @@ def _generate_task_file(
         lines.extend(["```", ""])
 
     # UAT section
-    lines.extend([
-        "## User Acceptance Tests",
-        "1. Verify the feature works as described",
-        "2. Check edge cases",
-        "3. Ensure proper error handling",
-        "",
-    ])
+    lines.extend(
+        [
+            "## User Acceptance Tests",
+            "1. Verify the feature works as described",
+            "2. Check edge cases",
+            "3. Ensure proper error handling",
+            "",
+        ]
+    )
 
     # Notes section
     notes = ["This task was auto-generated from a plan."]
     if estimated_complexity == "high" or estimated_complexity == "critical":
-        notes.append(f"WARNING: This task is marked as {estimated_complexity.upper()} complexity - allow extra time and review.")
+        notes.append(
+            f"WARNING: This task is marked as {estimated_complexity.upper()} complexity - allow extra time and review."
+        )
 
-    lines.extend([
-        "## Notes",
-    ])
+    lines.extend(
+        [
+            "## Notes",
+        ]
+    )
     for note in notes:
         lines.append(f"- {note}")
     lines.append("")
@@ -337,7 +389,10 @@ def _infer_allowed_paths(title: str, description: str, repo_root: Path) -> list[
     frontend_dirs = ["frontend", "client", "web", "app"]
     backend_dirs = ["backend", "server", "api"]
 
-    if any(k in text for k in ["vite", "react", "tailwind", "frontend", "ui", "screen", "mockup", "html"]):
+    if any(
+        k in text
+        for k in ["vite", "react", "tailwind", "frontend", "ui", "screen", "mockup", "html"]
+    ):
         for d in frontend_dirs:
             if (repo_root / d).exists():
                 return [f"{d}/"]
@@ -353,6 +408,132 @@ def _infer_allowed_paths(title: str, description: str, repo_root: Path) -> list[
         return ["tests/"]
 
     return []
+
+
+def _edges_from_task_data(tasks_data: list[dict], task_ids: set[str]) -> list[tuple[str, str]]:
+    """Extract edges from per-task dependency fields."""
+    edges: set[tuple[str, str]] = set()
+    for task_data in tasks_data:
+        if not isinstance(task_data, dict):
+            continue
+        task_id = str(task_data.get("id") or "").strip()
+        if not task_id or task_id not in task_ids:
+            continue
+        deps = task_data.get("depends_on") or task_data.get("dependencies", [])
+        if isinstance(deps, str):
+            deps = [deps]
+        if not isinstance(deps, list):
+            continue
+        for dep in deps:
+            dep_id = str(dep).strip()
+            if not dep_id or dep_id == task_id:
+                continue
+            if dep_id not in task_ids:
+                continue
+            edges.add((dep_id, task_id))
+    return sorted(edges)
+
+
+def _normalize_edges(raw_edges: object, task_ids: set[str]) -> list[tuple[str, str]]:
+    """Normalize planner edges into (from, to) tuples scoped to known task ids."""
+    if not isinstance(raw_edges, list):
+        return []
+
+    edges: set[tuple[str, str]] = set()
+    dropped_unknown = 0
+
+    for edge in raw_edges:
+        from_id: str | None = None
+        to_id: str | None = None
+
+        if isinstance(edge, (list, tuple)) and len(edge) == 2:
+            from_id = str(edge[0]).strip()
+            to_id = str(edge[1]).strip()
+        elif isinstance(edge, dict):
+            if "from" in edge and "to" in edge:
+                from_id = str(edge.get("from")).strip()
+                to_id = str(edge.get("to")).strip()
+            elif "source" in edge and "target" in edge:
+                from_id = str(edge.get("source")).strip()
+                to_id = str(edge.get("target")).strip()
+            elif "src" in edge and "dst" in edge:
+                from_id = str(edge.get("src")).strip()
+                to_id = str(edge.get("dst")).strip()
+
+        if not from_id or not to_id:
+            continue
+        if from_id == to_id:
+            continue
+        if from_id not in task_ids or to_id not in task_ids:
+            dropped_unknown += 1
+            continue
+
+        edges.add((from_id, to_id))
+
+    if dropped_unknown:
+        logger.warning("Dropped %s planner edges referencing unknown tasks", dropped_unknown)
+
+    return sorted(edges)
+
+
+def _merge_edges(
+    raw_edges: object, tasks_data: list[dict], task_ids: set[str]
+) -> list[tuple[str, str]]:
+    """Merge edges from planner edge list and per-task dependency fields."""
+    merged: set[tuple[str, str]] = set()
+    merged.update(_normalize_edges(raw_edges, task_ids))
+    merged.update(_edges_from_task_data(tasks_data, task_ids))
+    return sorted(merged)
+
+
+def _toposort_batches(
+    task_ids_in_order: list[str],
+    edges: list[tuple[str, str]],
+) -> tuple[list[str], list[list[str]], set[str]]:
+    """Compute a stable topo-order and parallel batches from tasks+edges.
+
+    Returns:
+        topo_order, parallel_batches, cycle_nodes
+    """
+    task_ids = [t for t in task_ids_in_order if t]
+    task_set = set(task_ids)
+
+    adjacency: dict[str, list[str]] = {t: [] for t in task_ids}
+    indegree: dict[str, int] = {t: 0 for t in task_ids}
+
+    for from_id, to_id in edges:
+        if from_id not in task_set or to_id not in task_set:
+            continue
+        if from_id == to_id:
+            continue
+        adjacency[from_id].append(to_id)
+        indegree[to_id] += 1
+
+    for src in adjacency:
+        adjacency[src].sort()
+
+    topo_order: list[str] = []
+    parallel_batches: list[list[str]] = []
+    processed: set[str] = set()
+
+    ready = [t for t in task_ids if indegree[t] == 0]
+    while ready:
+        batch = list(ready)
+        parallel_batches.append(batch)
+        topo_order.extend(batch)
+        processed.update(batch)
+
+        next_ready: set[str] = set()
+        for node in batch:
+            for neighbor in adjacency.get(node, []):
+                indegree[neighbor] -= 1
+                if indegree[neighbor] == 0:
+                    next_ready.add(neighbor)
+
+        ready = [t for t in task_ids if t in next_ready and t not in processed]
+
+    cycle_nodes = task_set - processed
+    return topo_order, parallel_batches, cycle_nodes
 
 
 def compute_ready_set(dag: TaskDAG, completed_tasks: set[str]) -> set[str]:
@@ -394,11 +575,27 @@ def validate_dag(dag: TaskDAG) -> list[str]:
     """
     errors = []
 
-    # Check that all tasks exist in topo order
-    topo_set = set(dag.topo_order)
-    for task_id in dag.tasks:
+    task_ids = list(dag.tasks.keys())
+    task_set = set(task_ids)
+
+    topo_order = dag.topo_order or []
+    topo_set: set[str] = set()
+    duplicates: set[str] = set()
+    for task_id in topo_order:
+        if task_id in topo_set:
+            duplicates.add(task_id)
+        topo_set.add(task_id)
+
+    for task_id in sorted(duplicates):
+        errors.append(f"Task {task_id} appears multiple times in topological order")
+
+    for task_id in task_set:
         if task_id not in topo_set:
             errors.append(f"Task {task_id} not in topological order")
+
+    for task_id in topo_set:
+        if task_id not in task_set:
+            errors.append(f"Topological order references non-existent task: {task_id}")
 
     # Check that all edges reference valid tasks
     for from_id, to_id in dag.edges:
@@ -407,9 +604,21 @@ def validate_dag(dag: TaskDAG) -> list[str]:
         if to_id not in dag.tasks:
             errors.append(f"Edge references non-existent task: {to_id}")
 
-    # Check for cycles (simple check: if topo_order doesn't contain all tasks)
-    if len(dag.topo_order) != len(dag.tasks):
-        errors.append("Possible cycle in task dependencies")
+    # Check that topo order respects edges.
+    index = {task_id: i for i, task_id in enumerate(topo_order)}
+    for from_id, to_id in dag.edges:
+        if from_id in index and to_id in index and index[from_id] >= index[to_id]:
+            errors.append(f"Topological order violates dependency: {from_id} -> {to_id}")
+
+    # Check for cycles accurately via Kahn's algorithm.
+    edges_scoped = [(a, b) for (a, b) in dag.edges if a in task_set and b in task_set]
+    _, _, cycle_nodes = _toposort_batches(task_ids, edges_scoped)
+    if cycle_nodes:
+        errors.append(
+            "Cycle detected in task dependencies: "
+            + ", ".join(sorted(cycle_nodes)[:20])
+            + (" ..." if len(cycle_nodes) > 20 else "")
+        )
 
     # Check that parallel batches are valid
     all_batched = set()

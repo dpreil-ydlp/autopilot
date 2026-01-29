@@ -3,9 +3,8 @@
 import logging
 import sys
 from datetime import datetime
-from pathlib import Path
-from typing import Optional
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 
 class AutopilotFormatter(logging.Formatter):
@@ -75,8 +74,8 @@ def _cleanup_old_logs(log_dir: Path, retention_days: int) -> None:
 
 def setup_logging(
     level: str = "INFO",
-    log_file: Optional[Path] = None,
-    log_dir: Optional[Path] = None,
+    log_file: Path | None = None,
+    log_dir: Path | None = None,
     rotation_mb: int = 10,
     retention_days: int = 7,
     use_colors: bool = True,

@@ -1,10 +1,9 @@
 """State persistence with atomic writes."""
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -46,8 +45,8 @@ class LastPlanState(BaseModel):
     """Last planner execution state."""
 
     status: str = Field(default="pending", description="Plan status: pending/done/failed")
-    artifact_path: Optional[str] = Field(default=None, description="Plan artifact path")
-    error_message: Optional[str] = Field(default=None)
+    artifact_path: str | None = Field(default=None, description="Plan artifact path")
+    error_message: str | None = Field(default=None)
 
 
 class LastBuildState(BaseModel):
@@ -55,8 +54,8 @@ class LastBuildState(BaseModel):
 
     status: str = Field(default="pending", description="Build status: pending/done/failed")
     iteration: int = Field(default=0, description="Current iteration number")
-    summary: Optional[dict] = Field(default=None, description="Build summary from agent")
-    error_message: Optional[str] = Field(default=None)
+    summary: dict | None = Field(default=None, description="Build summary from agent")
+    error_message: str | None = Field(default=None)
 
 
 class LastValidateState(BaseModel):
@@ -64,32 +63,36 @@ class LastValidateState(BaseModel):
 
     status: str = Field(default="pending", description="Validate status: pending/done/failed")
     exit_code: int = Field(default=0, description="Validation exit code")
-    output_tail: Optional[str] = Field(default=None, description="Last 20 lines of output")
+    output_tail: str | None = Field(default=None, description="Last 20 lines of output")
 
 
 class LastReviewState(BaseModel):
     """Last reviewer execution state."""
 
     status: str = Field(default="pending", description="Review status: pending/done/failed")
-    verdict: Optional[str] = Field(default=None, description="Review verdict: approve/request_changes")
-    feedback: Optional[str] = Field(default=None, description="Reviewer feedback")
-    error_message: Optional[str] = Field(default=None)
+    verdict: str | None = Field(default=None, description="Review verdict: approve/request_changes")
+    feedback: str | None = Field(default=None, description="Reviewer feedback")
+    error_message: str | None = Field(default=None)
 
 
 class LastUATGenerationState(BaseModel):
     """Last UAT generation state."""
 
-    status: str = Field(default="pending", description="UAT gen status: pending/done/failed/skipped")
-    artifact_path: Optional[str] = Field(default=None, description="UAT cases file path")
-    error_message: Optional[str] = Field(default=None)
+    status: str = Field(
+        default="pending", description="UAT gen status: pending/done/failed/skipped"
+    )
+    artifact_path: str | None = Field(default=None, description="UAT cases file path")
+    error_message: str | None = Field(default=None)
 
 
 class LastUATRunState(BaseModel):
     """Last UAT execution state."""
 
-    status: str = Field(default="pending", description="UAT run status: pending/done/failed/skipped")
+    status: str = Field(
+        default="pending", description="UAT run status: pending/done/failed/skipped"
+    )
     exit_code: int = Field(default=0, description="UAT exit code")
-    output_tail: Optional[str] = Field(default=None, description="Last 20 lines of output")
+    output_tail: str | None = Field(default=None, description="Last 20 lines of output")
 
 
 class SchedulerState(BaseModel):
@@ -101,7 +104,7 @@ class SchedulerState(BaseModel):
     tasks_running: int = Field(default=0, description="Tasks currently running")
     tasks_blocked: int = Field(default=0, description="Tasks blocked by dependencies")
     tasks_pending: int = Field(default=0, description="Tasks not yet ready")
-    current_task_id: Optional[str] = Field(default=None, description="Currently executing task")
+    current_task_id: str | None = Field(default=None, description="Currently executing task")
 
 
 class TaskState(BaseModel):
@@ -109,10 +112,12 @@ class TaskState(BaseModel):
 
     task_id: str
     title: str
-    status: str = Field(default="pending", description="Task status: pending/running/done/failed/blocked")
+    status: str = Field(
+        default="pending", description="Task status: pending/running/done/failed/blocked"
+    )
     dependencies: list[str] = Field(default_factory=list)
-    worker_id: Optional[str] = Field(default=None)
-    branch_name: Optional[str] = Field(default=None)
+    worker_id: str | None = Field(default=None)
+    branch_name: str | None = Field(default=None)
     iteration: int = Field(default=0)
 
     last_plan: LastPlanState = Field(default_factory=LastPlanState)
@@ -122,8 +127,8 @@ class TaskState(BaseModel):
     last_uat_gen: LastUATGenerationState = Field(default_factory=LastUATGenerationState)
     last_uat_run: LastUATRunState = Field(default_factory=LastUATRunState)
 
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 class GitState(BaseModel):
@@ -131,10 +136,12 @@ class GitState(BaseModel):
 
     current_branch: str = Field(description="Current git branch")
     original_branch: str = Field(description="Branch where we started")
-    task_branches: dict[str, str] = Field(default_factory=dict, description="Task ID -> branch name")
+    task_branches: dict[str, str] = Field(
+        default_factory=dict, description="Task ID -> branch name"
+    )
     commits: list[str] = Field(default_factory=list, description="Commit hashes made")
-    push_status: Optional[str] = Field(default=None, description="Push status: pending/success/failed")
-    pr_url: Optional[str] = Field(default=None, description="Created PR URL")
+    push_status: str | None = Field(default=None, description="Push status: pending/success/failed")
+    pr_url: str | None = Field(default=None, description="Created PR URL")
 
 
 class OrchestratorStateModel(BaseModel):
@@ -142,29 +149,29 @@ class OrchestratorStateModel(BaseModel):
 
     run_id: str = Field(description="Unique run identifier")
     state: OrchestratorState = Field(default=OrchestratorState.INIT)
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     # Task execution
-    current_task_id: Optional[str] = Field(default=None)
+    current_task_id: str | None = Field(default=None)
     tasks: dict[str, TaskState] = Field(default_factory=dict)
 
     # Scheduler state
     scheduler: SchedulerState = Field(default_factory=SchedulerState)
 
     # Git state
-    git: Optional[GitState] = Field(default=None)
+    git: GitState | None = Field(default=None)
 
     # Final UAT state
     final_uat_gen: LastUATGenerationState = Field(default_factory=LastUATGenerationState)
     final_uat_run: LastUATRunState = Field(default_factory=LastUATRunState)
 
     # Error tracking
-    error_message: Optional[str] = Field(default=None)
-    error_context: Optional[dict] = Field(default=None)
+    error_message: str | None = Field(default=None)
+    error_context: dict | None = Field(default=None)
 
 
-def load_state(state_path: Path) -> Optional[OrchestratorStateModel]:
+def load_state(state_path: Path) -> OrchestratorStateModel | None:
     """Load state from file.
 
     Args:
@@ -176,7 +183,7 @@ def load_state(state_path: Path) -> Optional[OrchestratorStateModel]:
     if not state_path.exists():
         return None
 
-    with open(state_path, "r") as f:
+    with open(state_path) as f:
         data = json.load(f)
 
     return OrchestratorStateModel(**data)
@@ -189,7 +196,7 @@ def save_state(state: OrchestratorStateModel, state_path: Path) -> None:
         state: State to save
         state_path: Destination path
     """
-    state.updated_at = datetime.now(timezone.utc).isoformat()
+    state.updated_at = datetime.now(UTC).isoformat()
 
     # Atomic write: temp file -> fsync -> rename
     temp_path = state_path.with_suffix(".tmp")
@@ -206,7 +213,7 @@ def generate_run_id() -> str:
     Returns:
         UUID-based run ID
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     return f"run_{timestamp}"

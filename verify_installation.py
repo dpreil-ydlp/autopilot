@@ -81,6 +81,7 @@ def main():
     print("CLI Commands:")
     try:
         import subprocess
+
         result = subprocess.run(
             ["autopilot", "--help"],
             capture_output=True,

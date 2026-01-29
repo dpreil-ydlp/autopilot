@@ -1,10 +1,8 @@
 """Unit tests for configuration models."""
 
-import pytest
 from pathlib import Path
-from pydantic import ValidationError
 
-from src.config.models import AutopilotConfig, RepoConfig, CommandsConfig
+from src.config.models import AutopilotConfig, CommandsConfig, RepoConfig
 
 
 def test_repo_config_defaults():

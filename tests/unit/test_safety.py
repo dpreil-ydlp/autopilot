@@ -1,21 +1,18 @@
 """Unit tests for safety guards."""
 
-import pytest
 from pathlib import Path
 
-from src.safety.guards import (
-    KillSwitch,
-    ScopeGuard,
-    ScopeCheckResult,
-    SafetyChecker,
-    SafetyError,
-)
+import pytest
+
 from src.recovery.policies import (
-    PushError,
     PushErrorType,
     PushRecovery,
     RetryConfig,
     RetryPolicy,
+)
+from src.safety.guards import (
+    KillSwitch,
+    ScopeCheckResult,
 )
 
 
@@ -37,6 +34,7 @@ def test_kill_switch_no_files(tmp_path):
     """Test KillSwitch when no files exist."""
     # Change to temp directory
     import os
+
     original_cwd = os.getcwd()
     os.chdir(tmp_path)
 
@@ -51,6 +49,7 @@ def test_kill_switch_no_files(tmp_path):
 def test_kill_switch_stop_file(tmp_path):
     """Test KillSwitch detects stop file."""
     import os
+
     original_cwd = os.getcwd()
     os.chdir(tmp_path)
 
@@ -70,6 +69,7 @@ def test_kill_switch_stop_file(tmp_path):
 def test_kill_switch_pause_file(tmp_path):
     """Test KillSwitch detects pause file."""
     import os
+
     original_cwd = os.getcwd()
     os.chdir(tmp_path)
 
@@ -89,6 +89,7 @@ def test_kill_switch_pause_file(tmp_path):
 def test_kill_switch_skip_review_file(tmp_path):
     """Test KillSwitch detects skip review file."""
     import os
+
     original_cwd = os.getcwd()
     os.chdir(tmp_path)
 

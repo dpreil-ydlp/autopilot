@@ -47,6 +47,9 @@ open "Install Autopilot.command"
 # Or install dependencies directly
 pip install -e .
 
+# You can also run this from any directory by passing the repo path:
+# pip install -e /path/to/autopilot
+
 # Initialize configuration
 autopilot init
 
@@ -206,6 +209,10 @@ Implement complete authentication system with JWT tokens.
 ```
 
 Autopilot expands plans into task DAGs and executes in parallel where possible.
+
+Plan runs also persist debugging artifacts:
+- Raw planner output: `.autopilot/plan/dag_raw.json`
+- Normalized DAG used for scheduling: `.autopilot/plan/dag.json`
 
 ## Development Status
 

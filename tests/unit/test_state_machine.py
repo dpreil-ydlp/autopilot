@@ -1,9 +1,9 @@
 """Unit tests for state machine."""
 
 import pytest
-from pathlib import Path
+
 from src.state.machine import OrchestratorMachine, StateTransitionError
-from src.state.persistence import OrchestratorState, OrchestratorStateModel
+from src.state.persistence import OrchestratorState
 
 
 def test_orchestrator_machine_initialization(tmp_path):

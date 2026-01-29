@@ -6,10 +6,9 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Optional
 
-from .base import BaseAgent, AgentError
-from ..utils.subprocess import SubprocessManager, SubprocessError
+from ..utils.subprocess import SubprocessError, SubprocessManager
+from .base import AgentError, BaseAgent
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +29,13 @@ class CodexAgent(BaseAgent):
         self.json_schema_path = config.get("json_schema_path")
         self.disable_mcp = config.get("disable_mcp", True)
         self.codex_overrides = config.get("codex_overrides", [])
-        self._isolated_codex_home: Optional[Path] = None
+        self._isolated_codex_home: Path | None = None
 
     async def execute(
         self,
         prompt: str,
         timeout_sec: int,
-        work_dir: Optional[Path] = None,
+        work_dir: Path | None = None,
     ) -> dict:
         """Codex doesn't support build mode - use Claude agent."""
         raise NotImplementedError("Use Claude agent for build")
@@ -46,8 +45,8 @@ class CodexAgent(BaseAgent):
         diff: str,
         validation_output: str,
         timeout_sec: int,
-        work_dir: Optional[Path] = None,
-        context: Optional[str] = None,
+        work_dir: Path | None = None,
+        context: str | None = None,
     ) -> dict:
         """Review code changes.
 
@@ -71,8 +70,8 @@ class CodexAgent(BaseAgent):
         self,
         plan_content: str,
         timeout_sec: int,
-        work_dir: Optional[Path] = None,
-        context: Optional[str] = None,
+        work_dir: Path | None = None,
+        context: str | None = None,
     ) -> dict:
         """Generate task DAG from plan.
 
@@ -96,8 +95,8 @@ class CodexAgent(BaseAgent):
         task_content: str,
         diff: str,
         timeout_sec: int,
-        work_dir: Optional[Path] = None,
-        context: Optional[str] = None,
+        work_dir: Path | None = None,
+        context: str | None = None,
     ) -> str:
         """Generate UAT cases as executable Python pytest code.
 
@@ -121,7 +120,7 @@ class CodexAgent(BaseAgent):
         self,
         diff: str,
         validation_output: str,
-        context: Optional[str] = None,
+        context: str | None = None,
     ) -> str:
         """Build review prompt."""
         context_block = f"\n## Task Context\n{context}\n" if context else ""
@@ -152,7 +151,7 @@ Consider:
 
 Output ONLY the JSON, no other text."""
 
-    def _build_plan_prompt(self, plan_content: str, context: Optional[str] = None) -> str:
+    def _build_plan_prompt(self, plan_content: str, context: str | None = None) -> str:
         """Build planning prompt."""
         context_block = f"\n## Plan Context\n{context}\n" if context else ""
         return f"""Convert the following plan into a task dependency graph with enriched metadata.{context_block}
@@ -199,7 +198,7 @@ Output ONLY the JSON, no other text."""
         self,
         task_content: str,
         diff: str,
-        context: Optional[str] = None,
+        context: str | None = None,
     ) -> str:
         """Build UAT generation prompt."""
         context_block = f"\n## Task Context\n{context}\n" if context else ""
@@ -263,7 +262,7 @@ IMPORTANT:
 
 Output ONLY the Python code, no markdown formatting, no explanations."""
 
-    async def _review_codex(self, prompt: str, timeout_sec: int, work_dir: Optional[Path]) -> dict:
+    async def _review_codex(self, prompt: str, timeout_sec: int, work_dir: Path | None) -> dict:
         """Review using Codex CLI."""
         try:
             # Assuming codex CLI exists
@@ -308,7 +307,7 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
         except Exception as e:
             raise AgentError(f"OpenAI review error: {e}")
 
-    async def _plan_codex(self, prompt: str, timeout_sec: int, work_dir: Optional[Path]) -> dict:
+    async def _plan_codex(self, prompt: str, timeout_sec: int, work_dir: Path | None) -> dict:
         """Plan using Codex CLI."""
         try:
             manager = SubprocessManager(timeout_sec=timeout_sec)
@@ -352,7 +351,7 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
         except Exception as e:
             raise AgentError(f"OpenAI plan error: {e}")
 
-    async def _uat_codex(self, prompt: str, timeout_sec: int, work_dir: Optional[Path]) -> str:
+    async def _uat_codex(self, prompt: str, timeout_sec: int, work_dir: Path | None) -> str:
         """Generate UAT using Codex CLI."""
         try:
             manager = SubprocessManager(timeout_sec=timeout_sec)
@@ -408,7 +407,7 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
 
         raise AgentError("No JSON found in review output")
 
-    def _build_codex_command(self, prompt: str, schema_path: Optional[str] = None) -> list[str]:
+    def _build_codex_command(self, prompt: str, schema_path: str | None = None) -> list[str]:
         """Build codex exec command with optional config overrides."""
         command = ["codex", "exec"]
         if schema_path:
@@ -429,7 +428,7 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
         return command
 
     @staticmethod
-    def _resolve_schema_path(schema_path: str) -> Optional[Path]:
+    def _resolve_schema_path(schema_path: str) -> Path | None:
         """Resolve schema path relative to repo or package."""
         raw_path = Path(schema_path).expanduser()
         if raw_path.is_absolute() and raw_path.exists():
@@ -448,7 +447,7 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
 
         return None
 
-    def _get_codex_env(self) -> Optional[dict[str, str]]:
+    def _get_codex_env(self) -> dict[str, str] | None:
         """Return environment overrides for Codex CLI."""
         if not self.disable_mcp:
             return None

@@ -1,15 +1,12 @@
 """Status dashboard and observability."""
 
 import logging
-from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 from ..state.persistence import (
     OrchestratorState,
     OrchestratorStateModel,
-    SchedulerState,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,12 +74,14 @@ class StatusDashboard:
 
         # Add error if present
         if self.state.error_message:
-            lines.extend([
-                "",
-                "## ⚠️ Error",
-                "",
-                f"```\n{self.state.error_message}\n```",
-            ])
+            lines.extend(
+                [
+                    "",
+                    "## ⚠️ Error",
+                    "",
+                    f"```\n{self.state.error_message}\n```",
+                ]
+            )
 
         return "\n".join(lines)
 
@@ -115,9 +114,7 @@ class StatusDashboard:
         # Find current state index
         try:
             current_idx = next(
-                i
-                for i, (state, _) in enumerate(state_order)
-                if state == self.state.state
+                i for i, (state, _) in enumerate(state_order) if state == self.state.state
             )
         except StopIteration:
             # Error state
@@ -191,10 +188,12 @@ class StatusDashboard:
 
         # Add task list if there are tasks
         if self.state.tasks:
-            lines.extend([
-                "### Tasks",
-                "",
-            ])
+            lines.extend(
+                [
+                    "### Tasks",
+                    "",
+                ]
+            )
 
             for task_id, task in self.state.tasks.items():
                 status_symbol = self._get_task_symbol(task.status)
@@ -224,37 +223,45 @@ class StatusDashboard:
         ]
 
         if git.task_branches:
-            lines.extend([
-                "### Task Branches",
-                "",
-            ])
+            lines.extend(
+                [
+                    "### Task Branches",
+                    "",
+                ]
+            )
             for task_id, branch in git.task_branches.items():
                 lines.append(f"- `{task_id}` → `{branch}`")
             lines.append("")
 
         if git.commits:
-            lines.extend([
-                "### Commits",
-                "",
-                f"{len(git.commits)} commits made",
-                "",
-            ])
+            lines.extend(
+                [
+                    "### Commits",
+                    "",
+                    f"{len(git.commits)} commits made",
+                    "",
+                ]
+            )
 
         if git.push_status:
-            lines.extend([
-                "### Push",
-                "",
-                f"**Status:** {git.push_status}",
-                "",
-            ])
+            lines.extend(
+                [
+                    "### Push",
+                    "",
+                    f"**Status:** {git.push_status}",
+                    "",
+                ]
+            )
 
         if git.pr_url:
-            lines.extend([
-                "### Pull Request",
-                "",
-                f"**URL:** {git.pr_url}",
-                "",
-            ])
+            lines.extend(
+                [
+                    "### Pull Request",
+                    "",
+                    f"**URL:** {git.pr_url}",
+                    "",
+                ]
+            )
 
         return "\n".join(lines)
 
@@ -272,15 +279,15 @@ class StatusDashboard:
         # Plan artifact
         plan_path = Path(".autopilot/plan/plan.json")
         if plan_path.exists():
-            lines.append(f"- **Plan:** `.autopilot/plan/plan.json`")
+            lines.append("- **Plan:** `.autopilot/plan/plan.json`")
 
         # DAG artifact
         dag_path = Path(".autopilot/plan/dag.json")
         if dag_path.exists():
-            lines.append(f"- **DAG:** `.autopilot/plan/dag.json`")
+            lines.append("- **DAG:** `.autopilot/plan/dag.json`")
 
         # State file
-        lines.append(f"- **State:** `.autopilot/state.json`")
+        lines.append("- **State:** `.autopilot/state.json`")
 
         # Logs directory
         if self.LOGS_DIR.exists():
@@ -337,17 +344,21 @@ class TerminalDashboard:
         """
         if not self.verbose:
             # Minimal output
-            print(f"\r[{state.state.value}] {state.current_task_id or 'No task'}", end="", flush=True)
+            print(
+                f"\r[{state.state.value}] {state.current_task_id or 'No task'}", end="", flush=True
+            )
         else:
             # Verbose output
-            print(f"\n=== Autopilot Status ===")
+            print("\n=== Autopilot Status ===")
             print(f"Run ID: {state.run_id}")
             print(f"State: {state.state.value}")
             print(f"Task: {state.current_task_id or 'None'}")
 
             if state.scheduler:
                 sched = state.scheduler
-                print(f"\nScheduler: {sched.tasks_done}/{sched.tasks_total} done, {sched.tasks_running} running, {sched.tasks_failed} failed")
+                print(
+                    f"\nScheduler: {sched.tasks_done}/{sched.tasks_total} done, {sched.tasks_running} running, {sched.tasks_failed} failed"
+                )
 
     def print_error(self, error: str) -> None:
         """Print error message.

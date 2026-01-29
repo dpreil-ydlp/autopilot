@@ -3,9 +3,8 @@
 import asyncio
 import logging
 import shutil
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 from ..agents.base import AgentError
 from ..agents.claude import ClaudeAgent
@@ -13,16 +12,11 @@ from ..agents.codex import CodexAgent
 from ..config.models import AutopilotConfig
 from ..integrations.github import GitHubIntegration
 from ..observability.dashboard import StatusDashboard, TerminalDashboard
-from ..safety.guards import SafetyChecker, SafetyError
+from ..safety.guards import SafetyChecker
 from ..scheduler.dag import DAGScheduler
 from ..state.machine import OrchestratorMachine
 from ..state.persistence import (
     OrchestratorState,
-    TaskState,
-    WorkerState,
-    LastBuildState,
-    LastValidateState,
-    LastReviewState,
 )
 from ..tasks.parser import parse_task_file, validate_task_constraints
 from ..tasks.plan import TaskDAG, expand_plan
@@ -41,7 +35,7 @@ class ExecutionLoop:
     def __init__(
         self,
         config: AutopilotConfig,
-        state_path: Optional[Path] = None,
+        state_path: Path | None = None,
         verbose: bool = False,
     ):
         """Initialize execution loop.
@@ -153,6 +147,7 @@ class ExecutionLoop:
 
             # Validate DAG
             from ..tasks.plan import validate_dag
+
             errors = validate_dag(dag)
 
             if errors:
@@ -166,7 +161,7 @@ class ExecutionLoop:
             logger.error(f"Plan execution failed: {e}")
             return False
 
-    async def _execute_dag(self, dag: TaskDAG, max_workers: Optional[int] = None) -> bool:
+    async def _execute_dag(self, dag: TaskDAG, max_workers: int | None = None) -> bool:
         """Execute task DAG.
 
         Args:
@@ -223,7 +218,6 @@ class ExecutionLoop:
                 worker_id = scheduler.pool.try_dispatch(task_id)
                 if worker_id:
                     worker = scheduler.pool.get_worker(worker_id)
-                    task = dag.tasks[task_id]
                     dispatched.append((task_id, worker_id, worker))
 
                 # Stop if we've dispatched max_workers tasks
@@ -253,7 +247,7 @@ class ExecutionLoop:
             # Run all dispatched tasks concurrently
             results = await asyncio.gather(
                 *[execute_on_worker(tid, wid, w) for tid, wid, w in dispatched],
-                return_exceptions=True
+                return_exceptions=True,
             )
 
             # Process results
@@ -287,7 +281,7 @@ class ExecutionLoop:
         self,
         task,
         scheduler: DAGScheduler,
-        workdir: Optional[Path] = None,
+        workdir: Path | None = None,
     ) -> bool:
         """Execute a single task.
 
@@ -362,7 +356,9 @@ class ExecutionLoop:
 
             # Review
             self.terminal.print_progress(f"Task {task_id}: Review")
-            review_success = await self._review_step(task_id, task, validation_results, workdir=workdir)
+            review_success = await self._review_step(
+                task_id, task, validation_results, workdir=workdir
+            )
             if not review_success:
                 self.terminal.print_progress(f"Task {task_id}: Updating (review changes)")
                 # Feed into FIX loop
@@ -393,7 +389,7 @@ class ExecutionLoop:
 
         # If using worktree, merge branch back to main
         if workdir and workdir != self.config.repo.root:
-            logger.info(f"Merging worktree changes back to main branch")
+            logger.info("Merging worktree changes back to main branch")
             try:
                 async with self._merge_lock:
                     await self._merge_worktree_to_main(
@@ -530,7 +526,7 @@ class ExecutionLoop:
             await manager.run(["git", "clean", "-fd", "--", *to_clean], cwd=repo_root)
 
         if to_backup:
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
             backup_root = repo_root / ".autopilot" / "merge-backups" / timestamp
             for rel in to_backup:
                 src = repo_root / rel
@@ -545,7 +541,7 @@ class ExecutionLoop:
         self,
         worktree_path: Path,
         branch_name: str,
-        allowed_paths: Optional[list[str]] = None,
+        allowed_paths: list[str] | None = None,
     ) -> None:
         """Merge worktree branch back to main branch.
 
@@ -611,7 +607,7 @@ class ExecutionLoop:
         self,
         task_id: str,
         task,
-        workdir: Optional[Path] = None,
+        workdir: Path | None = None,
         build_context: str = "",
     ) -> bool:
         """Execute build step.
@@ -641,7 +637,7 @@ class ExecutionLoop:
             )
 
             if result["success"]:
-                logger.info(f"Build succeeded")
+                logger.info("Build succeeded")
                 return True
             else:
                 logger.error(f"Build failed: {result.get('output', '')}")
@@ -652,7 +648,7 @@ class ExecutionLoop:
             return False
 
     async def _validate_step(
-        self, task_id: str, task, workdir: Optional[Path] = None
+        self, task_id: str, task, workdir: Path | None = None
     ) -> tuple[bool, dict, str]:
         """Execute validation step.
 
@@ -675,7 +671,8 @@ class ExecutionLoop:
         )
 
         try:
-            def pick(name: str, default: Optional[str]) -> Optional[str]:
+
+            def pick(name: str, default: str | None) -> str | None:
                 override = task.validation_commands.get(name)
                 if override is None or override == "":
                     return default
@@ -704,7 +701,9 @@ class ExecutionLoop:
             logger.error(f"Validation error: {e}")
             return False, {}, str(e)
 
-    async def _review_step(self, task_id: str, task, validation_results: dict, workdir: Optional[Path] = None) -> bool:
+    async def _review_step(
+        self, task_id: str, task, validation_results: dict, workdir: Path | None = None
+    ) -> bool:
         """Execute review step.
 
         Args:
@@ -760,7 +759,7 @@ class ExecutionLoop:
 
             verdict = result.get("verdict") if isinstance(result, dict) else None
             if verdict == "approve":
-                logger.info(f"Review approved")
+                logger.info("Review approved")
                 return True
             elif verdict == "request_changes":
                 logger.warning(f"Review requested changes: {result.get('feedback', '')}")
@@ -772,7 +771,7 @@ class ExecutionLoop:
             logger.error(f"Review error: {e}")
             return False
 
-    async def _generate_uat_step(self, task_id: str, task, workdir: Optional[Path] = None) -> bool:
+    async def _generate_uat_step(self, task_id: str, task, workdir: Path | None = None) -> bool:
         """Generate UAT cases as executable Python pytest code.
 
         Args:
@@ -816,7 +815,7 @@ class ExecutionLoop:
             uat_code = self._normalize_uat_code(uat_content)
 
             # Write UAT artifacts
-            from pathlib import Path
+
             uat_dir = workdir / "tests" / "uat"
             uat_dir.mkdir(parents=True, exist_ok=True)
 
@@ -832,14 +831,16 @@ class ExecutionLoop:
 
             # Ensure we have executable tests; otherwise create a skipped test
             if "def test_" not in uat_code:
-                uat_code = "\n".join([
-                    "import pytest",
-                    "",
-                    "pytest.skip(",
-                    f"    \"UAT cases generated at {uat_md} (no executable tests produced)\",",
-                    "    allow_module_level=True,",
-                    ")",
-                ])
+                uat_code = "\n".join(
+                    [
+                        "import pytest",
+                        "",
+                        "pytest.skip(",
+                        f'    "UAT cases generated at {uat_md} (no executable tests produced)",',
+                        "    allow_module_level=True,",
+                        ")",
+                    ]
+                )
 
             with open(uat_file, "w") as f:
                 f.write(uat_code)
@@ -851,7 +852,7 @@ class ExecutionLoop:
             logger.error(f"UAT generation error: {e}")
             return False
 
-    async def _uat_step(self, task_id: str, task, workdir: Optional[Path] = None) -> bool:
+    async def _uat_step(self, task_id: str, task, workdir: Path | None = None) -> bool:
         """Execute UAT step.
 
         Args:
@@ -880,7 +881,7 @@ class ExecutionLoop:
             result = await runner.run_uat(uat_command)
 
             if result.success:
-                logger.info(f"UAT passed")
+                logger.info("UAT passed")
                 return True
             else:
                 logger.error(f"UAT failed: {result.output}")
@@ -913,6 +914,7 @@ class ExecutionLoop:
 
             uat_code = self._normalize_uat_code(uat_content)
             from pathlib import Path
+
             uat_dir = Path("tests/uat")
             uat_dir.mkdir(parents=True, exist_ok=True)
             uat_md = uat_dir / "final_uat.md"
@@ -920,14 +922,16 @@ class ExecutionLoop:
             with open(uat_md, "w") as f:
                 f.write(uat_content)
             if "def test_" not in uat_code:
-                uat_code = "\n".join([
-                    "import pytest",
-                    "",
-                    "pytest.skip(",
-                    "    \"Final UAT generated as markdown (no executable tests produced)\",",
-                    "    allow_module_level=True,",
-                    ")",
-                ])
+                uat_code = "\n".join(
+                    [
+                        "import pytest",
+                        "",
+                        "pytest.skip(",
+                        '    "Final UAT generated as markdown (no executable tests produced)",',
+                        "    allow_module_level=True,",
+                        ")",
+                    ]
+                )
             with open(uat_py, "w") as f:
                 f.write(uat_code)
         except Exception as e:
@@ -963,13 +967,13 @@ class ExecutionLoop:
         if fence_end == -1:
             return text
 
-        code_block = text[fence_start + 3:fence_end]
+        code_block = text[fence_start + 3 : fence_end]
         stripped = code_block.lstrip()
         if stripped.startswith("python"):
-            stripped = stripped[len("python"):]
+            stripped = stripped[len("python") :]
         return stripped.strip()
 
-    async def _commit_step(self, task_id: str, task, workdir: Optional[Path] = None) -> bool:
+    async def _commit_step(self, task_id: str, task, workdir: Path | None = None) -> bool:
         """Commit changes.
 
         Args:
@@ -1035,7 +1039,9 @@ class ExecutionLoop:
                 violations.append(path)
 
         if violations:
-            logger.error("Out-of-scope changes for %s: %s", task_id, ", ".join(sorted(set(violations))))
+            logger.error(
+                "Out-of-scope changes for %s: %s", task_id, ", ".join(sorted(set(violations)))
+            )
             return False
 
         # Stage only in-scope paths (plus any already-staged housekeeping changes).
@@ -1135,12 +1141,12 @@ class ExecutionLoop:
             "",
             f"{task.goal}",
             "",
-            f"Co-Authored-By: Autopilot <noreply@autopilot>",
+            "Co-Authored-By: Autopilot <noreply@autopilot>",
         ]
 
         return "\n".join(lines)
 
-    async def resume(self, task_path: Optional[Path] = None) -> bool:
+    async def resume(self, task_path: Path | None = None) -> bool:
         """Resume interrupted execution.
 
         Args:
@@ -1181,7 +1187,7 @@ class ExecutionLoop:
 
         return False
 
-    async def _find_task_file(self, task_id: str) -> Optional[Path]:
+    async def _find_task_file(self, task_id: str) -> Path | None:
         """Find task file by task ID.
 
         Args:

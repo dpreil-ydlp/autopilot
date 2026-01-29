@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
-import signal
 import time
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
 
 
 @dataclass
@@ -193,7 +193,9 @@ def find_codex_processes() -> list[tuple[int, str]]:
     return candidates
 
 
-def cleanup_codex_processes(dry_run: bool = False, timeout_sec: float = 2.0) -> ProcessCleanupResult:
+def cleanup_codex_processes(
+    dry_run: bool = False, timeout_sec: float = 2.0
+) -> ProcessCleanupResult:
     """Terminate running Codex CLI processes."""
     result = ProcessCleanupResult()
     candidates = find_codex_processes()

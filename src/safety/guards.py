@@ -3,7 +3,6 @@
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from ..utils.git import GitOps
 
@@ -97,8 +96,8 @@ class ScopeGuard:
     def __init__(
         self,
         git_ops: GitOps,
-        allowed_paths: Optional[list[str]] = None,
-        denied_paths: Optional[list[str]] = None,
+        allowed_paths: list[str] | None = None,
+        denied_paths: list[str] | None = None,
         diff_lines_cap: int = 1000,
         max_todo_count: int = 0,
     ):
@@ -137,9 +136,7 @@ class ScopeGuard:
         # Check diff size
         diff_lines = await self.git_ops.count_lines_changed()
         if diff_lines > self.diff_lines_cap:
-            violations.append(
-                f"Diff too large: {diff_lines} lines (cap: {self.diff_lines_cap})"
-            )
+            violations.append(f"Diff too large: {diff_lines} lines (cap: {self.diff_lines_cap})")
 
         # Check TODOs
         if self.max_todo_count == 0:
@@ -186,8 +183,8 @@ class SafetyChecker:
     def __init__(
         self,
         git_ops: GitOps,
-        allowed_paths: Optional[list[str]] = None,
-        denied_paths: Optional[list[str]] = None,
+        allowed_paths: list[str] | None = None,
+        denied_paths: list[str] | None = None,
         diff_lines_cap: int = 1000,
         max_todo_count: int = 0,
     ):

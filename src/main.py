@@ -3,20 +3,19 @@
 import asyncio
 import sys
 from pathlib import Path
-from typing import Optional
 
 import click
 
 from .config.loader import ConfigError, create_default_config, load_config
 from .executor.loop import ExecutionLoop
-from .utils.logging import setup_logging
 from .utils.cleanup import (
-    cleanup_codex_processes,
     cleanup_codex_home,
+    cleanup_codex_processes,
     cleanup_codex_temp,
     cleanup_logs,
     cleanup_worktrees,
 )
+from .utils.logging import setup_logging
 
 CONTEXT_SETTINGS = {
     "help_option_names": ["-h", "--help"],
@@ -117,10 +116,10 @@ def init(ctx: click.Context, force: bool) -> None:
 @click.pass_context
 def run(
     ctx: click.Context,
-    target: Optional[Path],
+    target: Path | None,
     queue: bool,
-    pattern: Optional[str],
-    plan: Optional[Path],
+    pattern: str | None,
+    plan: Path | None,
     max_workers: int,
     resume: bool,
     quiet: bool,
@@ -148,26 +147,28 @@ def run(
     )
 
     # Run async execution loop
-    success = asyncio.run(_run_async(
-        config=config,
-        target=target,
-        queue=queue,
-        pattern=pattern,
-        plan=plan,
-        max_workers=max_workers,
-        resume=resume,
-        verbose=verbose,
-    ))
+    success = asyncio.run(
+        _run_async(
+            config=config,
+            target=target,
+            queue=queue,
+            pattern=pattern,
+            plan=plan,
+            max_workers=max_workers,
+            resume=resume,
+            verbose=verbose,
+        )
+    )
 
     sys.exit(0 if success else 1)
 
 
 async def _run_async(
     config,
-    target: Optional[Path],
+    target: Path | None,
     queue: bool,
-    pattern: Optional[str],
-    plan: Optional[Path],
+    pattern: str | None,
+    plan: Path | None,
     max_workers: int,
     resume: bool,
     verbose: bool,
@@ -219,6 +220,7 @@ async def _run_async(
         # Apply pattern filter if provided
         if pattern:
             import re
+
             regex = re.compile(pattern)
             task_files = [f for f in task_files if regex.search(f.name)]
 
@@ -263,7 +265,7 @@ def status(ctx: click.Context) -> None:
 
     import json
 
-    with open(state_path, "r") as f:
+    with open(state_path) as f:
         state = json.load(f)
 
     click.echo(f"Run ID: {state.get('run_id', 'unknown')}")
@@ -286,7 +288,7 @@ def status(ctx: click.Context) -> None:
     help="Maximum parallel workers",
 )
 @click.pass_context
-def resume(ctx: click.Context, task: Optional[Path], max_workers: int) -> None:
+def resume(ctx: click.Context, task: Path | None, max_workers: int) -> None:
     """Resume interrupted Autopilot run.
 
     TASK: Optional path to task file (auto-detected if not specified)
@@ -316,7 +318,7 @@ def resume(ctx: click.Context, task: Optional[Path], max_workers: int) -> None:
     sys.exit(0 if success else 1)
 
 
-async def _resume_async(config, task: Optional[Path], max_workers: int, verbose: bool) -> bool:
+async def _resume_async(config, task: Path | None, max_workers: int, verbose: bool) -> bool:
     """Async resume implementation.
 
     Args:

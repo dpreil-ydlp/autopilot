@@ -4,10 +4,9 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Optional
 
-from .base import BaseAgent, AgentError
-from ..utils.subprocess import SubprocessManager, SubprocessError
+from ..utils.subprocess import SubprocessError, SubprocessManager
+from .base import AgentError, BaseAgent
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +33,7 @@ class ClaudeAgent(BaseAgent):
         self,
         prompt: str,
         timeout_sec: int,
-        work_dir: Optional[Path] = None,
+        work_dir: Path | None = None,
     ) -> dict:
         """Execute build with Claude Code CLI.
 
@@ -115,13 +114,10 @@ class ClaudeAgent(BaseAgent):
 
                     now = time.time()
                     buffer_text = stream_state["buffer"]
-                    if (
-                        buffer_text
-                        and (
-                            "\n" in buffer_text
-                            or len(buffer_text) >= 200
-                            or now - stream_state["last_flush"] >= self.stream_log_interval_sec
-                        )
+                    if buffer_text and (
+                        "\n" in buffer_text
+                        or len(buffer_text) >= 200
+                        or now - stream_state["last_flush"] >= self.stream_log_interval_sec
                     ):
                         logger.info("claude> %s", buffer_text.rstrip())
                         stream_state["buffer"] = ""
@@ -139,7 +135,9 @@ class ClaudeAgent(BaseAgent):
 
                 output_text = result["output"]
                 if self.stream_output:
-                    output_text = self._resolve_streamed_text(output_text, stream_state) or output_text
+                    output_text = (
+                        self._resolve_streamed_text(output_text, stream_state) or output_text
+                    )
                     result["output"] = output_text
 
                 if result["success"] or output_text.strip():
@@ -189,8 +187,8 @@ class ClaudeAgent(BaseAgent):
         diff: str,
         validation_output: str,
         timeout_sec: int,
-        work_dir: Optional[Path] = None,
-        context: Optional[str] = None,
+        work_dir: Path | None = None,
+        context: str | None = None,
     ) -> dict:
         """Claude doesn't support review mode - use Codex agent."""
         raise NotImplementedError("Use Codex agent for review")
@@ -199,8 +197,8 @@ class ClaudeAgent(BaseAgent):
         self,
         plan_content: str,
         timeout_sec: int,
-        work_dir: Optional[Path] = None,
-        context: Optional[str] = None,
+        work_dir: Path | None = None,
+        context: str | None = None,
     ) -> dict:
         """Claude doesn't support planning mode - use Codex agent."""
         raise NotImplementedError("Use Codex agent for planning")
@@ -210,13 +208,13 @@ class ClaudeAgent(BaseAgent):
         task_content: str,
         diff: str,
         timeout_sec: int,
-        work_dir: Optional[Path] = None,
-        context: Optional[str] = None,
+        work_dir: Path | None = None,
+        context: str | None = None,
     ) -> str:
         """Claude doesn't support UAT generation - use Codex agent."""
         raise NotImplementedError("Use Codex agent for UAT generation")
 
-    def _extract_summary(self, output: str) -> Optional[dict]:
+    def _extract_summary(self, output: str) -> dict | None:
         """Extract JSON summary from Claude output.
 
         Args:
@@ -259,10 +257,9 @@ class ClaudeAgent(BaseAgent):
 
     def _extract_diff(self, output: str) -> str:
         """Extract a unified diff from Claude output."""
+
         def _looks_like_diff(text: str) -> bool:
-            return "diff --git" in text or (
-                "\n--- " in f"\n{text}" and "\n+++ " in f"\n{text}"
-            )
+            return "diff --git" in text or ("\n--- " in f"\n{text}" and "\n+++ " in f"\n{text}")
 
         # Prefer fenced diff blocks if present
         if "```" in output:
@@ -282,7 +279,7 @@ class ClaudeAgent(BaseAgent):
             if line.startswith("diff --git"):
                 last_idx = idx
             if line.startswith("--- "):
-                # ensure next line is +++ 
+                # ensure next line is +++
                 if idx + 1 < len(lines) and lines[idx + 1].startswith("+++ "):
                     last_idx = idx
 
@@ -326,7 +323,7 @@ class ClaudeAgent(BaseAgent):
             return result_text
         return "".join(parts).strip()
 
-    async def _apply_diff(self, diff: str, work_dir: Optional[Path]) -> None:
+    async def _apply_diff(self, diff: str, work_dir: Path | None) -> None:
         """Apply diff with git apply in working directory."""
         target_dir = work_dir or Path.cwd()
         patch_dir = target_dir / ".autopilot" / "patches"

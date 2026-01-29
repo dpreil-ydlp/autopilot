@@ -1,19 +1,19 @@
 """Unit tests for task and plan processing."""
 
-import pytest
 from pathlib import Path
 
+import pytest
+
 from src.tasks.parser import (
-    ParsedTask,
+    TaskParseError,
     parse_task_file,
     validate_task_constraints,
-    TaskParseError,
 )
 from src.tasks.plan import (
     TaskDAG,
+    _generate_task_file,
     compute_ready_set,
     validate_dag,
-    _generate_task_file,
 )
 
 

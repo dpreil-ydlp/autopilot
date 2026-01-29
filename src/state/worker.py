@@ -1,16 +1,15 @@
 """Worker task loop state machine implementation."""
 
 import logging
-from typing import Optional
 
 from .persistence import (
-    TaskState,
-    WorkerState,
     LastBuildState,
-    LastValidateState,
     LastReviewState,
     LastUATGenerationState,
     LastUATRunState,
+    LastValidateState,
+    TaskState,
+    WorkerState,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,13 +44,25 @@ class WorkerLoop:
         # If nothing running, check what's pending
         if self.task.last_build.status in ("pending", None):
             return WorkerState.TASK_INIT
-        if self.task.last_build.status == "done" and self.task.last_validate.status in ("pending", None):
+        if self.task.last_build.status == "done" and self.task.last_validate.status in (
+            "pending",
+            None,
+        ):
             return WorkerState.BUILD
-        if self.task.last_validate.status == "done" and self.task.last_review.status in ("pending", None):
+        if self.task.last_validate.status == "done" and self.task.last_review.status in (
+            "pending",
+            None,
+        ):
             return WorkerState.VALIDATE
-        if self.task.last_review.status == "done" and self.task.last_uat_gen.status in ("pending", None):
+        if self.task.last_review.status == "done" and self.task.last_uat_gen.status in (
+            "pending",
+            None,
+        ):
             return WorkerState.REVIEW
-        if self.task.last_uat_gen.status == "done" and self.task.last_uat_run.status in ("pending", None):
+        if self.task.last_uat_gen.status == "done" and self.task.last_uat_run.status in (
+            "pending",
+            None,
+        ):
             return WorkerState.UAT_GENERATE
 
         # Check if in FIX loop
@@ -81,7 +92,6 @@ class WorkerLoop:
         Returns:
             True if max iterations not exceeded
         """
-        from ..config.models import AutopilotConfig
 
         # This would need config passed in - simplified for now
         max_iterations = 10

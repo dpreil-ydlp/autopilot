@@ -1,7 +1,6 @@
 """Configuration models for Autopilot."""
 
 from pathlib import Path
-from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -13,16 +12,16 @@ class RepoConfig(BaseModel):
 
     root: Path = Field(description="Root directory of the repository")
     default_branch: str = Field(default="main", description="Default branch name")
-    remote: Optional[str] = Field(default=None, description="Remote name")
+    remote: str | None = Field(default=None, description="Remote name")
 
 
 class CommandsConfig(BaseModel):
     """Validation and UAT commands."""
 
-    format: Optional[str] = Field(default=None, description="Format command (optional)")
-    lint: Optional[str] = Field(default=None, description="Lint command (optional)")
+    format: str | None = Field(default=None, description="Format command (optional)")
+    lint: str | None = Field(default=None, description="Lint command (optional)")
     tests: str = Field(description="Test command (required)")
-    uat: Optional[str] = Field(default=None, description="UAT command (optional)")
+    uat: str | None = Field(default=None, description="UAT command (optional)")
 
 
 class OrchestratorConfig(BaseModel):
@@ -63,11 +62,11 @@ class ReviewerConfig(BaseModel):
     """Reviewer agent configuration."""
 
     mode: str = Field(default="codex_cli", description="codex_cli or openai_api")
-    model: Optional[str] = Field(
+    model: str | None = Field(
         default=None,
         description="Model for openai_api mode (falls back to OPENAI_MODEL)",
     )
-    api_key_env: Optional[str] = Field(default=None, description="API key env var name")
+    api_key_env: str | None = Field(default=None, description="API key env var name")
     max_retries: int = Field(default=1, description="Max review retries")
     disable_mcp: bool = Field(
         default=True,
@@ -80,11 +79,11 @@ class PlannerConfig(BaseModel):
     """Planner agent configuration."""
 
     mode: str = Field(default="codex_cli", description="codex_cli or openai_api")
-    model: Optional[str] = Field(
+    model: str | None = Field(
         default=None,
         description="Model for openai_api mode (falls back to OPENAI_MODEL)",
     )
-    api_key_env: Optional[str] = Field(default=None, description="API key env var name")
+    api_key_env: str | None = Field(default=None, description="API key env var name")
     disable_mcp: bool = Field(
         default=True,
         description="Disable MCP server startup for Codex CLI runs",
@@ -106,7 +105,7 @@ class BuilderConfig(BaseModel):
     stream_log_interval_sec: float = Field(
         default=1.5, description="Seconds between streamed log flushes"
     )
-    system_prompt: Optional[str] = Field(default=None, description="Builder system prompt override")
+    system_prompt: str | None = Field(default=None, description="Builder system prompt override")
 
 
 class GitHubConfig(BaseModel):
