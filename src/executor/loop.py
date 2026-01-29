@@ -467,7 +467,7 @@ class ExecutionLoop:
             if in_scope:
                 await manager.run(["git", "checkout", "--theirs", "--", path], cwd=repo_root)
             else:
-            await manager.run(["git", "checkout", "--ours", "--", path], cwd=repo_root)
+                await manager.run(["git", "checkout", "--ours", "--", path], cwd=repo_root)
             await manager.run(["git", "add", path], cwd=repo_root)
 
     async def _clean_untracked_in_allowed_paths(
