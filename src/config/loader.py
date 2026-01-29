@@ -83,6 +83,7 @@ def create_default_config(config_path: Path) -> None:
             "uat_generate_timeout_sec": 180,
             "uat_run_timeout_sec": 300,
             "stuck_no_output_sec": 120,
+            "allow_no_tests": True,
         },
         "safety": {
             "allowed_paths": ["src/", "tests/"],

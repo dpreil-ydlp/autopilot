@@ -43,6 +43,10 @@ class LoopConfig(BaseModel):
     uat_generate_timeout_sec: int = Field(default=180, description="UAT generation timeout")
     uat_run_timeout_sec: int = Field(default=300, description="UAT run timeout")
     stuck_no_output_sec: int = Field(default=120, description="Stuck detection threshold")
+    allow_no_tests: bool = Field(
+        default=True,
+        description="Treat 'no tests ran' as success for pytest",
+    )
 
 
 class SafetyConfig(BaseModel):

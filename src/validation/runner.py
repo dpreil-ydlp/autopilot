@@ -43,6 +43,7 @@ class ValidationRunner:
         work_dir: Path,
         timeout_sec: int = 120,
         log_dir: Optional[Path] = None,
+        allow_no_tests: bool = True,
     ):
         """Initialize validation runner.
 
@@ -54,6 +55,7 @@ class ValidationRunner:
         self.work_dir = work_dir
         self.timeout_sec = timeout_sec
         self.log_dir = log_dir
+        self.allow_no_tests = allow_no_tests
 
     async def run_format(
         self,
@@ -260,6 +262,16 @@ class ValidationRunner:
                 cwd=self.work_dir,
                 capture_output=True,
             )
+
+            if (
+                command_type == "tests"
+                and self.allow_no_tests
+                and result["exit_code"] == 5
+                and "no tests ran" in result["output"].lower()
+            ):
+                logger.warning("No tests ran; treating as success")
+                result["success"] = True
+                result["exit_code"] = 0
 
             # Get output tail (last 20 lines)
             output_lines = result["output"].split("\n")

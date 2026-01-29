@@ -629,6 +629,7 @@ class ExecutionLoop:
         runner = ValidationRunner(
             work_dir=workdir,
             timeout_sec=self.config.loop.validate_timeout_sec,
+            allow_no_tests=self.config.loop.allow_no_tests,
         )
 
         try:
@@ -704,12 +705,15 @@ class ExecutionLoop:
                 context=context,
             )
 
-            if result["verdict"] == "approve":
+            verdict = result.get("verdict") if isinstance(result, dict) else None
+            if verdict == "approve":
                 logger.info(f"Review approved")
                 return True
-            else:
+            elif verdict == "request_changes":
                 logger.warning(f"Review requested changes: {result.get('feedback', '')}")
                 return False
+            logger.error(f"Review returned invalid response: {result}")
+            return False
 
         except AgentError as e:
             logger.error(f"Review error: {e}")

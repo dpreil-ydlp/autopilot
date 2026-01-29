@@ -138,5 +138,6 @@ cython_debug/
 # Autopilot specific
 .autopilot/
 logs/
+.DS_Store
 *.patch
 *.bundle
