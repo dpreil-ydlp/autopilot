@@ -104,7 +104,11 @@ async def expand_plan(
             # Extract enriched fields with defaults
             goal = task_data.get("goal", description)
             acceptance_criteria = task_data.get("acceptance_criteria", [])
-            allowed_paths = task_data.get("allowed_paths", ["src/", "tests/"])
+            raw_allowed_paths = task_data.get("allowed_paths")
+            if isinstance(raw_allowed_paths, list) and raw_allowed_paths:
+                allowed_paths = [str(p) for p in raw_allowed_paths if str(p).strip()]
+            else:
+                allowed_paths = _infer_allowed_paths(title, description, plan_path.parent) or ["src/", "tests/"]
             skills_used = (
                 task_data.get("suggested_claude_skills")
                 or task_data.get("suggested_skills")
@@ -294,21 +298,13 @@ def _generate_task_file(
 
         lines.append("")
 
-    # Validation commands section
-    if validation_commands:
-        commands = {k: v for k, v in validation_commands.items() if v}
-    else:
-        commands = {
-            "tests": "pytest -q",
-            "lint": "ruff check .",
-            "format": "ruff format .",
-            "uat": "pytest -q tests/uat",
-        }
-
-    lines.extend(["## Validation Commands", "```yaml"])
-    for key, value in commands.items():
-        lines.append(f"{key}: {value}")
-    lines.extend(["```", ""])
+    # Validation commands section (optional). When omitted, runtime uses repo config defaults.
+    commands = {k: v for k, v in (validation_commands or {}).items() if v}
+    if commands:
+        lines.extend(["## Validation Commands", "```yaml"])
+        for key, value in commands.items():
+            lines.append(f"{key}: {value}")
+        lines.extend(["```", ""])
 
     # UAT section
     lines.extend([
@@ -332,6 +328,31 @@ def _generate_task_file(
     lines.append("")
 
     return "\n".join(lines)
+
+
+def _infer_allowed_paths(title: str, description: str, repo_root: Path) -> list[str]:
+    """Infer allowed paths for a task when the planner doesn't provide any."""
+    text = f"{title}\n{description}".lower()
+
+    frontend_dirs = ["frontend", "client", "web", "app"]
+    backend_dirs = ["backend", "server", "api"]
+
+    if any(k in text for k in ["vite", "react", "tailwind", "frontend", "ui", "screen", "mockup", "html"]):
+        for d in frontend_dirs:
+            if (repo_root / d).exists():
+                return [f"{d}/"]
+
+    if any(k in text for k in ["fastapi", "backend", "api", "server"]):
+        for d in backend_dirs:
+            if (repo_root / d).exists():
+                return [f"{d}/"]
+
+    if (repo_root / "src").exists():
+        return ["src/"]
+    if (repo_root / "tests").exists():
+        return ["tests/"]
+
+    return []
 
 
 def compute_ready_set(dag: TaskDAG, completed_tasks: set[str]) -> set[str]:

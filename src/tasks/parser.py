@@ -139,9 +139,11 @@ def _extract_list_section(content: str, section_name: str, required: bool = Fals
         line = line.strip()
         # Match bullets (- or *) or numbered lists (1. 2. etc.)
         if line.startswith(("- ", "* ")) or re.match(r"^\d+\.\s", line):
-            # Remove bullet/number and any checkbox markers
-            item = re.sub(r"^[-*]\s*\[[ x]\]?\s*", "", line)
-            item = re.sub(r"^\d+\.\s*", "", item)
+            # Remove bullet/number and optional checkbox marker.
+            if re.match(r"^\d+\.\s", line):
+                item = re.sub(r"^\d+\.\s*(?:\[[ xX]\]\s*)?", "", line)
+            else:
+                item = re.sub(r"^[-*]\s*(?:\[[ xX]\]\s*)?", "", line)
             item = item.strip()
             if item:
                 items.append(item)
@@ -161,10 +163,7 @@ def _extract_validation_commands(content: str) -> dict[str, str]:
     section_text = _extract_section(content, "Validation Commands", required=False)
 
     if not section_text:
-        # Return default commands
-        return {
-            "tests": "pytest -q",
-        }
+        return {}
 
     # Try to extract YAML code block
     yaml_match = re.search(r"```yaml\n(.*?)```", section_text, re.DOTALL)
@@ -187,10 +186,6 @@ def _extract_validation_commands(content: str) -> dict[str, str]:
             key, value = line.split(":", 1)
             commands[key.strip()] = value.strip()
 
-    # Ensure at least tests command exists
-    if "tests" not in commands:
-        commands["tests"] = "pytest -q"
-
     return commands
 
 
@@ -212,9 +207,5 @@ def validate_task_constraints(task: ParsedTask) -> list[str]:
     # Check that allowed paths are specified
     if not task.allowed_paths:
         violations.append("Task should specify allowed paths for safety")
-
-    # Check that validation commands include tests
-    if "tests" not in task.validation_commands:
-        violations.append("Task must have tests validation command")
 
     return violations

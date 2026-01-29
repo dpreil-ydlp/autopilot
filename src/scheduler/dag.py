@@ -287,6 +287,7 @@ class Worker:
         # Create isolated worktree for this task
         branch_name = f"autopilot/{self.current_task}"
         worktree_path = None
+        success = False
 
         try:
             # Setup isolated environment
@@ -309,8 +310,14 @@ class Worker:
             return False
 
         finally:
-            # Always cleanup worktree
-            await self.cleanup_worktree()
+            # Cleanup only on success; preserve failed worktrees for debugging.
+            if success:
+                await self.cleanup_worktree()
+            elif self.worktree_path:
+                logger.warning(
+                    "Preserving worktree for failed task (run 'autopilot recover --worktrees' to clean): %s",
+                    self.worktree_path,
+                )
 
 
 class DAGScheduler:

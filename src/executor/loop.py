@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -53,6 +54,7 @@ class ExecutionLoop:
         self.config = config
         self.verbose = verbose
         self.max_workers = 4  # Default, can be overridden per execution
+        self._merge_lock = asyncio.Lock()
 
         # State management
         state_path = state_path or Path(".autopilot/state.json")
@@ -384,17 +386,21 @@ class ExecutionLoop:
             break
 
         # Commit changes (in worktree if applicable)
-        await self._commit_step(task_id, task, workdir=workdir)
+        commit_ok = await self._commit_step(task_id, task, workdir=workdir)
+        if not commit_ok:
+            self.machine.update_task(task_id, status="failed")
+            return False
 
         # If using worktree, merge branch back to main
         if workdir and workdir != self.config.repo.root:
             logger.info(f"Merging worktree changes back to main branch")
             try:
-                await self._merge_worktree_to_main(
-                    workdir,
-                    branch_name,
-                    allowed_paths=task.allowed_paths,
-                )
+                async with self._merge_lock:
+                    await self._merge_worktree_to_main(
+                        workdir,
+                        branch_name,
+                        allowed_paths=task.allowed_paths,
+                    )
             except Exception as e:
                 logger.error(f"Failed to merge worktree changes: {e}")
                 self.machine.update_task(task_id, status="failed")
@@ -470,32 +476,70 @@ class ExecutionLoop:
                 await manager.run(["git", "checkout", "--ours", "--", path], cwd=repo_root)
             await manager.run(["git", "add", path], cwd=repo_root)
 
-    async def _clean_untracked_in_allowed_paths(
+    @staticmethod
+    def _extract_merge_untracked_overwrite_paths(output: str) -> list[str]:
+        """Extract untracked paths from git's 'would be overwritten by merge' error."""
+        lines = output.splitlines()
+        paths: list[str] = []
+        collecting = False
+        for line in lines:
+            if "untracked working tree files would be overwritten by merge" in line:
+                collecting = True
+                continue
+            if not collecting:
+                continue
+            if not line.strip():
+                continue
+            if line.lstrip() != line:
+                paths.append(line.strip())
+                continue
+            # Stop once we hit the next non-indented line.
+            break
+        return paths
+
+    @staticmethod
+    def _is_ignorable_untracked_path(path: str) -> bool:
+        basename = Path(path).name
+        return basename in {".DS_Store", "Thumbs.db", "desktop.ini"}
+
+    async def _handle_merge_untracked_overwrite(
         self,
         repo_root: Path,
+        paths: list[str],
         allowed_paths: list[str],
     ) -> None:
-        """Remove untracked files inside allowed paths only."""
-        manager = SubprocessManager(timeout_sec=30)
-        status = await manager.run(["git", "status", "--porcelain"], cwd=repo_root)
-        if not status["success"]:
+        """Handle untracked files that block a merge by moving them aside safely."""
+        if not paths:
             return
 
-        normalized = [p if p.endswith("/") else f"{p}/" for p in allowed_paths]
-        untracked: list[str] = []
-        for line in status["output"].splitlines():
-            if not line.startswith("?? "):
-                continue
-            path = line[3:].strip()
-            if any(path.startswith(prefix) for prefix in normalized):
-                untracked.append(path)
-            else:
-                raise Exception(
-                    f"Untracked files outside allowed paths block merge: {path}"
-                )
+        manager = SubprocessManager(timeout_sec=30)
+        normalized_allowed = [p if p.endswith("/") else f"{p}/" for p in allowed_paths]
 
-        if untracked:
-            await manager.run(["git", "clean", "-fd", "--", *untracked], cwd=repo_root)
+        to_clean: list[str] = []
+        to_backup: list[str] = []
+        for path in paths:
+            if self._is_ignorable_untracked_path(path):
+                to_clean.append(path)
+                continue
+            if normalized_allowed and any(path.startswith(prefix) for prefix in normalized_allowed):
+                to_clean.append(path)
+                continue
+            to_backup.append(path)
+
+        if to_clean:
+            await manager.run(["git", "clean", "-fd", "--", *to_clean], cwd=repo_root)
+
+        if to_backup:
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            backup_root = repo_root / ".autopilot" / "merge-backups" / timestamp
+            for rel in to_backup:
+                src = repo_root / rel
+                if not src.exists():
+                    continue
+                dst = backup_root / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dst))
+                logger.warning("Moved untracked file blocking merge: %s -> %s", rel, dst)
 
     async def _merge_worktree_to_main(
         self,
@@ -522,10 +566,6 @@ class ExecutionLoop:
             if not result["success"]:
                 raise Exception(f"Failed to checkout default branch: {result['output']}")
 
-        # Clean untracked files inside allowed paths before merge.
-        if allowed_paths:
-            await self._clean_untracked_in_allowed_paths(repo_root, allowed_paths)
-
         # Merge the task branch into default branch
         result = await manager.run(
             ["git", "merge", "--no-ff", branch_name],
@@ -550,16 +590,18 @@ class ExecutionLoop:
                 if not commit_result["success"]:
                     raise Exception(f"Failed to finalize scope merge: {commit_result['output']}")
             elif "untracked working tree files would be overwritten by merge" in result["output"]:
-                if allowed_paths:
-                    await self._clean_untracked_in_allowed_paths(repo_root, allowed_paths)
-                    retry = await manager.run(
-                        ["git", "merge", "--no-ff", branch_name],
-                        cwd=repo_root,
-                    )
-                    if not retry["success"]:
-                        raise Exception(f"Failed to merge branch: {retry['output']}")
-                else:
-                    raise Exception(f"Failed to merge branch: {result['output']}")
+                blocking_paths = self._extract_merge_untracked_overwrite_paths(result["output"])
+                await self._handle_merge_untracked_overwrite(
+                    repo_root=repo_root,
+                    paths=blocking_paths,
+                    allowed_paths=allowed_paths or [],
+                )
+                retry = await manager.run(
+                    ["git", "merge", "--no-ff", branch_name],
+                    cwd=repo_root,
+                )
+                if not retry["success"]:
+                    raise Exception(f"Failed to merge branch: {retry['output']}")
             else:
                 raise Exception(f"Failed to merge branch: {result['output']}")
 
@@ -633,9 +675,20 @@ class ExecutionLoop:
         )
 
         try:
-            results = await runner.run_all(
-                commands=task.validation_commands,
-            )
+            def pick(name: str, default: Optional[str]) -> Optional[str]:
+                override = task.validation_commands.get(name)
+                if override is None or override == "":
+                    return default
+                return override
+
+            effective_commands = {
+                "format": pick("format", self.config.commands.format),
+                "lint": pick("lint", self.config.commands.lint),
+                "tests": pick("tests", self.config.commands.tests),
+                "uat": pick("uat", self.config.commands.uat),
+            }
+
+            results = await runner.run_all(commands=effective_commands)
 
             # Check if all passed
             all_passed = all(r.success for r in results.values())
@@ -668,14 +721,14 @@ class ExecutionLoop:
         workdir = workdir or self.config.repo.root
 
         try:
+            allowed_paths = [p.strip() for p in (task.allowed_paths or []) if p.strip()]
             # Get diff from worktree
-            if workdir != self.config.repo.root:
-                # Get diff from worktree
-                manager = SubprocessManager(timeout_sec=30)
-                result = await manager.run(["git", "diff"], cwd=workdir)
-                diff = result["output"]
-            else:
-                diff = await self.git_ops.get_diff()
+            manager = SubprocessManager(timeout_sec=30)
+            diff_cmd = ["git", "diff"]
+            if allowed_paths:
+                diff_cmd.extend(["--", *allowed_paths])
+            result = await manager.run(diff_cmd, cwd=workdir)
+            diff = result["output"]
 
             # Generate validation output summary
             validation_output = ""
@@ -741,13 +794,13 @@ class ExecutionLoop:
             return True
 
         try:
-            # Get current diff from worktree
-            if workdir != self.config.repo.root:
-                manager = SubprocessManager(timeout_sec=30)
-                result = await manager.run(["git", "diff"], cwd=workdir)
-                diff = result["output"]
-            else:
-                diff = await self.git_ops.get_diff()
+            allowed_paths = [p.strip() for p in (task.allowed_paths or []) if p.strip()]
+            manager = SubprocessManager(timeout_sec=30)
+            diff_cmd = ["git", "diff"]
+            if allowed_paths:
+                diff_cmd.extend(["--", *allowed_paths])
+            result = await manager.run(diff_cmd, cwd=workdir)
+            diff = result["output"]
 
             # Generate UAT Python code using Codex
             context = self._format_task_context(task, phase="UAT Generation")
@@ -916,65 +969,100 @@ class ExecutionLoop:
             stripped = stripped[len("python"):]
         return stripped.strip()
 
-    async def _commit_step(self, task_id: str, task, workdir: Optional[Path] = None) -> None:
+    async def _commit_step(self, task_id: str, task, workdir: Optional[Path] = None) -> bool:
         """Commit changes.
 
         Args:
             task_id: Task ID
             task: ParsedTask
             workdir: Working directory (uses repo root if not specified)
+
+        Returns:
+            True if commit succeeded (or there was nothing to commit).
         """
         logger.info(f"Commit step for {task_id}")
 
         workdir = workdir or self.config.repo.root
 
-        # Stage and commit changes in worktree
-        if workdir != self.config.repo.root:
-            # Commit in worktree
-            manager = SubprocessManager(timeout_sec=30)
+        allowed_paths = [p.strip() for p in (task.allowed_paths or []) if p.strip()]
+        manager = SubprocessManager(timeout_sec=30)
 
-            # Remove logs from tracking and clean ignored files
-            await manager.run(["git", "rm", "-r", "--cached", "--ignore-unmatch", "logs"], cwd=workdir)
-            await manager.run(["git", "clean", "-fdX"], cwd=workdir)
+        # Housekeeping: remove known-noise paths from tracking and clean ignored files.
+        await manager.run(["git", "rm", "-r", "--cached", "--ignore-unmatch", "logs"], cwd=workdir)
+        await manager.run(["git", "clean", "-fdX"], cwd=workdir)
 
-            # Stage all changes
-            result = await manager.run(["git", "add", "."], cwd=workdir)
-            if not result["success"]:
-                logger.error(f"Failed to stage changes in worktree: {result['output']}")
-                return
+        status = await manager.run(["git", "status", "--porcelain"], cwd=workdir)
+        if not status["success"]:
+            logger.error("Failed to get git status: %s", status["output"])
+            return False
 
-            status = await manager.run(["git", "status", "--porcelain"], cwd=workdir)
-            if status["success"] and not status["output"].strip():
-                logger.info("No changes to commit in worktree; skipping commit")
-                return
+        def extract_path(line: str) -> str:
+            payload = line[3:].strip()
+            if " -> " in payload:
+                payload = payload.split(" -> ", 1)[1].strip()
+            return payload
 
-            # Commit
-            commit_message = self._generate_commit_message(task_id, task)
-            result = await manager.run(
-                ["git", "commit", "-m", commit_message],
-                cwd=workdir,
+        def in_scope(path: str) -> bool:
+            if not allowed_paths:
+                return True
+            for prefix in allowed_paths:
+                if prefix.endswith("/"):
+                    if path.startswith(prefix):
+                        return True
+                else:
+                    if path == prefix or path.startswith(prefix + "/"):
+                        return True
+            return False
+
+        def is_noise(path: str) -> bool:
+            return (
+                path.startswith(".autopilot/")
+                or path.startswith("logs/")
+                or path.endswith("/.DS_Store")
+                or path == ".DS_Store"
             )
-            if not result["success"]:
-                logger.error(f"Failed to commit in worktree: {result['output']}")
-                return
 
-            logger.info(f"Committed changes in worktree: {workdir}")
+        violations: list[str] = []
+        for line in status["output"].splitlines():
+            if not line.strip():
+                continue
+            path = extract_path(line)
+            if not path:
+                continue
+            if is_noise(path):
+                continue
+            if not in_scope(path):
+                violations.append(path)
+
+        if violations:
+            logger.error("Out-of-scope changes for %s: %s", task_id, ", ".join(sorted(set(violations))))
+            return False
+
+        # Stage only in-scope paths (plus any already-staged housekeeping changes).
+        if allowed_paths:
+            add_cmd = ["git", "add", "--", *allowed_paths]
         else:
-            # Remove logs from tracking and clean ignored files
-            manager = SubprocessManager(timeout_sec=30)
-            await manager.run(["git", "rm", "-r", "--cached", "--ignore-unmatch", "logs"], cwd=workdir)
-            await manager.run(["git", "clean", "-fdX"], cwd=workdir)
+            logger.warning("Task %s has no allowed_paths; staging all changes", task_id)
+            add_cmd = ["git", "add", "."]
 
-            # Stage all changes
-            changed_files = await self.git_ops.list_files_changed()
-            if not changed_files:
-                logger.info("No changes to commit in repo; skipping commit")
-                return
-            await self.git_ops.add(changed_files)
+        result = await manager.run(add_cmd, cwd=workdir)
+        if not result["success"]:
+            logger.error("Failed to stage changes: %s", result["output"])
+            return False
 
-            # Commit
-            commit_message = self._generate_commit_message(task_id, task)
-            await self.git_ops.commit(commit_message)
+        staged = await manager.run(["git", "diff", "--cached", "--name-only"], cwd=workdir)
+        if staged["success"] and not staged["output"].strip():
+            logger.info("No changes to commit; skipping commit")
+            return True
+
+        commit_message = self._generate_commit_message(task_id, task)
+        result = await manager.run(["git", "commit", "-m", commit_message], cwd=workdir)
+        if not result["success"]:
+            logger.error("Failed to commit: %s", result["output"])
+            return False
+
+        logger.info("Committed changes in: %s", workdir)
+        return True
 
     async def _push_step(self, task_id: str, task, iterations: int) -> None:
         """Push changes and create PR.

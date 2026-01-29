@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import shlex
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Callable
@@ -72,7 +73,7 @@ class SubprocessManager:
         Raises:
             SubprocessError: On execution failure
         """
-        logger.info(f"Running command: {' '.join(command)}")
+        logger.info("Running command: %s", self._format_command_for_log(command))
 
         # Prepare log file if configured
         log_path = None
@@ -179,6 +180,31 @@ class SubprocessManager:
             raise SubprocessError(f"Command not found: {command[0]}")
         except Exception as e:
             raise SubprocessError(f"Subprocess error: {e}")
+
+    @staticmethod
+    def _format_command_for_log(command: list[str]) -> str:
+        """Format a command for logs without dumping huge prompts."""
+        if not command:
+            return ""
+
+        redacted = list(command)
+        if redacted[0] in {"codex", "claude"} and len(redacted) >= 2:
+            # The last argument is typically a large prompt; redact it if big.
+            last_idx = len(redacted) - 1
+            if len(redacted[last_idx]) > 200:
+                redacted[last_idx] = f"<prompt {len(command[last_idx])} chars>"
+
+        parts: list[str] = []
+        max_args = 12
+        max_arg_len = 200
+        for i, arg in enumerate(redacted):
+            if i >= max_args:
+                parts.append("...")
+                break
+            if len(arg) > max_arg_len:
+                arg = arg[:max_arg_len] + "..."
+            parts.append(shlex.quote(arg))
+        return " ".join(parts)
 
     async def _read_with_timeout(
         self,
