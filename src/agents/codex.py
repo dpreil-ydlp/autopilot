@@ -161,11 +161,8 @@ Important: Do NOT scan the repo or look for AGENTS.md. Use only the plan content
 ## Plan
 {plan_content}
 
-Return JSON with keys:
+Return JSON with the key:
 - tasks: list of task objects
-- edges: list of [from, to] task id pairs
-- topo_order: list of task ids
-- parallel_batches: list of lists of task ids
 
 Each task object must include:
 - id: "task-1", "task-2", ...
@@ -175,8 +172,7 @@ Each task object must include:
 - acceptance_criteria: list of strings
 - allowed_paths: list of path prefixes
 - validation_commands: object with optional overrides (tests, lint, format, uat)
-- depends_on: list of task ids
-- dependencies: list of task ids
+- depends_on: list of task ids this task depends on (may be empty)
 - suggested_claude_skills: list of strings
 - suggested_mcp_servers: list of strings
 - suggested_subagents: list of strings
@@ -189,7 +185,7 @@ Rules:
 - It is OK (expected) to output MORE tasks than listed in the plan.
 - Explicitly encode dependencies so the DAG can parallelize safely.
 - Prefer separating foundations (design system, routing, data models) from feature work.
-- Ensure edges/topo_order/parallel_batches reference ONLY the task ids you emit.
+- Ensure depends_on references ONLY the task ids you emit.
 - Use ids task-1..task-N in order, with N = total tasks you produce.
 
 Output ONLY the JSON, no other text."""
@@ -312,7 +308,10 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
         try:
             manager = SubprocessManager(timeout_sec=timeout_sec)
             result = await manager.run(
-                self._build_codex_command(prompt),
+                self._build_codex_command(
+                    prompt=prompt,
+                    schema_path=self.json_schema_path,
+                ),
                 cwd=work_dir,
                 env=self._get_codex_env(),
             )

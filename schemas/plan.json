@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Plan DAG",
   "type": "object",
-  "required": ["tasks", "edges", "topo_order", "parallel_batches"],
+  "required": ["tasks"],
   "properties": {
     "tasks": {
       "type": "array",
@@ -50,7 +50,7 @@
       "items": {
         "type": "string"
       },
-      "description": "Topological sort of task IDs"
+      "description": "Deprecated: Autopilot computes a deterministic topological order"
     },
     "parallel_batches": {
       "type": "array",
@@ -60,7 +60,7 @@
           "type": "string"
         }
       },
-      "description": "Groups of tasks that can run in parallel"
+      "description": "Deprecated: Autopilot computes deterministic parallel batches"
     }
   }
 }
