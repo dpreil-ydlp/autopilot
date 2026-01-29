@@ -467,8 +467,35 @@ class ExecutionLoop:
             if in_scope:
                 await manager.run(["git", "checkout", "--theirs", "--", path], cwd=repo_root)
             else:
-                await manager.run(["git", "checkout", "--ours", "--", path], cwd=repo_root)
+            await manager.run(["git", "checkout", "--ours", "--", path], cwd=repo_root)
             await manager.run(["git", "add", path], cwd=repo_root)
+
+    async def _clean_untracked_in_allowed_paths(
+        self,
+        repo_root: Path,
+        allowed_paths: list[str],
+    ) -> None:
+        """Remove untracked files inside allowed paths only."""
+        manager = SubprocessManager(timeout_sec=30)
+        status = await manager.run(["git", "status", "--porcelain"], cwd=repo_root)
+        if not status["success"]:
+            return
+
+        normalized = [p if p.endswith("/") else f"{p}/" for p in allowed_paths]
+        untracked: list[str] = []
+        for line in status["output"].splitlines():
+            if not line.startswith("?? "):
+                continue
+            path = line[3:].strip()
+            if any(path.startswith(prefix) for prefix in normalized):
+                untracked.append(path)
+            else:
+                raise Exception(
+                    f"Untracked files outside allowed paths block merge: {path}"
+                )
+
+        if untracked:
+            await manager.run(["git", "clean", "-fd", "--", *untracked], cwd=repo_root)
 
     async def _merge_worktree_to_main(
         self,
@@ -495,6 +522,10 @@ class ExecutionLoop:
             if not result["success"]:
                 raise Exception(f"Failed to checkout default branch: {result['output']}")
 
+        # Clean untracked files inside allowed paths before merge.
+        if allowed_paths:
+            await self._clean_untracked_in_allowed_paths(repo_root, allowed_paths)
+
         # Merge the task branch into default branch
         result = await manager.run(
             ["git", "merge", "--no-ff", branch_name],
@@ -518,6 +549,17 @@ class ExecutionLoop:
                 )
                 if not commit_result["success"]:
                     raise Exception(f"Failed to finalize scope merge: {commit_result['output']}")
+            elif "untracked working tree files would be overwritten by merge" in result["output"]:
+                if allowed_paths:
+                    await self._clean_untracked_in_allowed_paths(repo_root, allowed_paths)
+                    retry = await manager.run(
+                        ["git", "merge", "--no-ff", branch_name],
+                        cwd=repo_root,
+                    )
+                    if not retry["success"]:
+                        raise Exception(f"Failed to merge branch: {retry['output']}")
+                else:
+                    raise Exception(f"Failed to merge branch: {result['output']}")
             else:
                 raise Exception(f"Failed to merge branch: {result['output']}")
 

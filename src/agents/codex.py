@@ -412,7 +412,11 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
         """Build codex exec command with optional config overrides."""
         command = ["codex", "exec"]
         if schema_path:
-            command.extend(["--output-schema", schema_path])
+            resolved = self._resolve_schema_path(schema_path)
+            if resolved:
+                command.extend(["--output-schema", str(resolved)])
+            else:
+                logger.warning("Schema file not found: %s (running without schema)", schema_path)
 
         overrides = list(self.codex_overrides)
         if self.disable_mcp and not any(o.startswith("mcp_servers") for o in overrides):
@@ -423,6 +427,26 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
 
         command.append(prompt)
         return command
+
+    @staticmethod
+    def _resolve_schema_path(schema_path: str) -> Optional[Path]:
+        """Resolve schema path relative to repo or package."""
+        raw_path = Path(schema_path).expanduser()
+        if raw_path.is_absolute() and raw_path.exists():
+            return raw_path
+
+        # Try relative to current working directory.
+        cwd_path = Path.cwd() / raw_path
+        if cwd_path.exists():
+            return cwd_path
+
+        # Try relative to package root (repo).
+        pkg_root = Path(__file__).resolve().parents[2]
+        pkg_path = pkg_root / raw_path
+        if pkg_path.exists():
+            return pkg_path
+
+        return None
 
     def _get_codex_env(self) -> Optional[dict[str, str]]:
         """Return environment overrides for Codex CLI."""
