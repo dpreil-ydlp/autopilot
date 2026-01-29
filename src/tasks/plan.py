@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 
 from ..agents.codex import CodexAgent
 from .parser import ParsedTask, parse_task_file
@@ -32,6 +32,7 @@ async def expand_plan(
     plan_path: Path,
     planner_config: dict,
     output_dir: Optional[Path] = None,
+    progress_callback: Optional[Callable[[str], None]] = None,
 ) -> TaskDAG:
     """Expand plan file into task DAG.
 
@@ -56,12 +57,18 @@ async def expand_plan(
     agent = CodexAgent(planner_config)
 
     try:
+        if progress_callback:
+            progress_callback("Codex planning started")
         logger.info(f"Expanding plan: {plan_path}")
+        plan_context = f"Plan file: {plan_path.name}\nPlan size: {len(plan_content)} characters"
         plan_result = await agent.plan(
             plan_content=plan_content,
             timeout_sec=planner_config.get("timeout_sec", 300),
             work_dir=plan_path.parent,
+            context=plan_context,
         )
+        if progress_callback:
+            progress_callback("Codex planning completed")
 
         # Extract DAG structure from plan result
         tasks_data = plan_result.get("tasks", [])
@@ -139,6 +146,8 @@ async def expand_plan(
             tasks[task_id] = parsed_task
 
             logger.info(f"Materialized task: {task_id} - {title} ({estimated_complexity} complexity)")
+            if progress_callback:
+                progress_callback(f"Task created: {task_id} - {title}")
 
         # Write DAG artifact
         dag_artifact = Path(".autopilot/plan/dag.json")

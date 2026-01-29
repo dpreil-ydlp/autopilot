@@ -190,6 +190,7 @@ class ClaudeAgent(BaseAgent):
         validation_output: str,
         timeout_sec: int,
         work_dir: Optional[Path] = None,
+        context: Optional[str] = None,
     ) -> dict:
         """Claude doesn't support review mode - use Codex agent."""
         raise NotImplementedError("Use Codex agent for review")
@@ -199,6 +200,7 @@ class ClaudeAgent(BaseAgent):
         plan_content: str,
         timeout_sec: int,
         work_dir: Optional[Path] = None,
+        context: Optional[str] = None,
     ) -> dict:
         """Claude doesn't support planning mode - use Codex agent."""
         raise NotImplementedError("Use Codex agent for planning")
@@ -209,6 +211,7 @@ class ClaudeAgent(BaseAgent):
         diff: str,
         timeout_sec: int,
         work_dir: Optional[Path] = None,
+        context: Optional[str] = None,
     ) -> str:
         """Claude doesn't support UAT generation - use Codex agent."""
         raise NotImplementedError("Use Codex agent for UAT generation")

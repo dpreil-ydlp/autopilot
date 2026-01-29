@@ -10,6 +10,13 @@ import click
 from .config.loader import ConfigError, create_default_config, load_config
 from .executor.loop import ExecutionLoop
 from .utils.logging import setup_logging
+from .utils.cleanup import (
+    cleanup_codex_processes,
+    cleanup_codex_home,
+    cleanup_codex_temp,
+    cleanup_logs,
+    cleanup_worktrees,
+)
 
 CONTEXT_SETTINGS = {
     "help_option_names": ["-h", "--help"],
@@ -93,7 +100,7 @@ def init(ctx: click.Context, force: bool) -> None:
 @click.option(
     "--max-workers",
     "-w",
-    default=1,
+    default=4,
     type=int,
     help="Maximum parallel workers",
 )
@@ -129,6 +136,16 @@ def run(
     except ConfigError as e:
         click.echo(f"✗ Configuration error: {e}", err=True)
         sys.exit(1)
+
+    # Reconfigure logging with file output
+    setup_logging(
+        level=config.logging.level,
+        log_dir=config.logging.log_dir,
+        rotation_mb=config.logging.rotation_mb,
+        retention_days=config.logging.retention_days,
+        use_colors=verbose,
+        console=verbose and not quiet,
+    )
 
     # Run async execution loop
     success = asyncio.run(_run_async(
@@ -264,7 +281,7 @@ def status(ctx: click.Context) -> None:
 @click.option(
     "--max-workers",
     "-w",
-    default=1,
+    default=4,
     type=int,
     help="Maximum parallel workers",
 )
@@ -283,6 +300,16 @@ def resume(ctx: click.Context, task: Optional[Path], max_workers: int) -> None:
     except ConfigError as e:
         click.echo(f"✗ Configuration error: {e}", err=True)
         sys.exit(1)
+
+    # Reconfigure logging with file output
+    setup_logging(
+        level=config.logging.level,
+        log_dir=config.logging.log_dir,
+        rotation_mb=config.logging.rotation_mb,
+        retention_days=config.logging.retention_days,
+        use_colors=verbose,
+        console=verbose,
+    )
 
     # Run async resume
     success = asyncio.run(_resume_async(config, task, max_workers, verbose))
@@ -349,6 +376,188 @@ def unpause(ctx: click.Context) -> None:
 
     pause_file.unlink()
     click.echo("✓ Unpaused - Autopilot will continue")
+
+
+@cli.command()
+@click.option(
+    "--codex-temp/--no-codex-temp",
+    default=True,
+    help="Remove legacy codex-nomcp temp directories",
+)
+@click.option(
+    "--worktrees",
+    is_flag=True,
+    help="Remove inactive worktrees under .autopilot/worktrees",
+)
+@click.option(
+    "--logs",
+    is_flag=True,
+    help="Remove .autopilot/logs directory",
+)
+@click.option(
+    "--codex-home",
+    is_flag=True,
+    help="Remove isolated codex home (AUTOPILOT_CODEX_HOME or .autopilot/codex-home)",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="List paths that would be removed without deleting anything",
+)
+@click.pass_context
+def clean(
+    ctx: click.Context,
+    codex_temp: bool,
+    worktrees: bool,
+    logs: bool,
+    codex_home: bool,
+    dry_run: bool,
+) -> None:
+    """Clean up Autopilot temporary files."""
+    config_path: Path = ctx.obj["config_path"]
+
+    # Resolve repo root (best-effort).
+    repo_root = Path.cwd()
+    try:
+        config = load_config(config_path)
+        repo_root = config.repo.root
+    except Exception:
+        pass
+
+    removed: list[Path] = []
+    errors: list[str] = []
+
+    if codex_temp:
+        result = cleanup_codex_temp(dry_run=dry_run)
+        removed.extend(result.removed)
+        errors.extend(result.errors)
+
+    if worktrees:
+        result = cleanup_worktrees(repo_root=repo_root, dry_run=dry_run)
+        removed.extend(result.removed)
+        errors.extend(result.errors)
+
+    if logs:
+        result = cleanup_logs(repo_root=repo_root, dry_run=dry_run)
+        removed.extend(result.removed)
+        errors.extend(result.errors)
+
+    if codex_home:
+        result = cleanup_codex_home(repo_root=repo_root, dry_run=dry_run)
+        removed.extend(result.removed)
+        errors.extend(result.errors)
+
+    if removed:
+        click.echo("\nRemoved:")
+        for path in removed:
+            click.echo(f"  {path}")
+    else:
+        click.echo("No paths removed")
+
+    if errors:
+        click.echo("\nErrors:")
+        for error in errors:
+            click.echo(f"  {error}")
+
+
+@cli.command()
+@click.option(
+    "--kill-codex/--no-kill-codex",
+    default=True,
+    help="Terminate running Codex CLI processes",
+)
+@click.option(
+    "--codex-temp/--no-codex-temp",
+    default=True,
+    help="Remove legacy codex-nomcp temp directories",
+)
+@click.option(
+    "--worktrees/--no-worktrees",
+    default=True,
+    help="Remove inactive worktrees under .autopilot/worktrees",
+)
+@click.option(
+    "--logs/--no-logs",
+    default=True,
+    help="Remove .autopilot/logs directory",
+)
+@click.option(
+    "--codex-home",
+    is_flag=True,
+    help="Remove isolated codex home (AUTOPILOT_CODEX_HOME or .autopilot/codex-home)",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="List actions without deleting or terminating processes",
+)
+@click.pass_context
+def recover(
+    ctx: click.Context,
+    kill_codex: bool,
+    codex_temp: bool,
+    worktrees: bool,
+    logs: bool,
+    codex_home: bool,
+    dry_run: bool,
+) -> None:
+    """Recover disk space and memory by cleaning temporary data."""
+    config_path: Path = ctx.obj["config_path"]
+
+    # Resolve repo root (best-effort).
+    repo_root = Path.cwd()
+    try:
+        config = load_config(config_path)
+        repo_root = config.repo.root
+    except Exception:
+        pass
+
+    removed: list[Path] = []
+    errors: list[str] = []
+
+    if kill_codex:
+        proc_result = cleanup_codex_processes(dry_run=dry_run)
+        if proc_result.candidates:
+            click.echo("Codex processes:")
+            for pid, cmd in proc_result.candidates:
+                click.echo(f"  {pid} {cmd}")
+        if proc_result.terminated:
+            click.echo("Terminated Codex PIDs:")
+            for pid in proc_result.terminated:
+                click.echo(f"  {pid}")
+        errors.extend(proc_result.errors)
+
+    if codex_temp:
+        result = cleanup_codex_temp(dry_run=dry_run)
+        removed.extend(result.removed)
+        errors.extend(result.errors)
+
+    if worktrees:
+        result = cleanup_worktrees(repo_root=repo_root, dry_run=dry_run)
+        removed.extend(result.removed)
+        errors.extend(result.errors)
+
+    if logs:
+        result = cleanup_logs(repo_root=repo_root, dry_run=dry_run)
+        removed.extend(result.removed)
+        errors.extend(result.errors)
+
+    if codex_home:
+        result = cleanup_codex_home(repo_root=repo_root, dry_run=dry_run)
+        removed.extend(result.removed)
+        errors.extend(result.errors)
+
+    if removed:
+        click.echo("\nRemoved:")
+        for path in removed:
+            click.echo(f"  {path}")
+    else:
+        click.echo("\nNo paths removed")
+
+    if errors:
+        click.echo("\nErrors:")
+        for error in errors:
+            click.echo(f"  {error}")
 
 
 if __name__ == "__main__":

@@ -56,6 +56,7 @@ class BaseAgent(ABC):
         validation_output: str,
         timeout_sec: int,
         work_dir: Optional[Path] = None,
+        context: Optional[str] = None,
     ) -> dict:
         """Review code changes.
 
@@ -79,6 +80,7 @@ class BaseAgent(ABC):
         plan_content: str,
         timeout_sec: int,
         work_dir: Optional[Path] = None,
+        context: Optional[str] = None,
     ) -> dict:
         """Generate task DAG from plan.
 
@@ -103,6 +105,7 @@ class BaseAgent(ABC):
         diff: str,
         timeout_sec: int,
         work_dir: Optional[Path] = None,
+        context: Optional[str] = None,
     ) -> str:
         """Generate UAT cases.
 

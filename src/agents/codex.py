@@ -47,6 +47,7 @@ class CodexAgent(BaseAgent):
         validation_output: str,
         timeout_sec: int,
         work_dir: Optional[Path] = None,
+        context: Optional[str] = None,
     ) -> dict:
         """Review code changes.
 
@@ -59,7 +60,7 @@ class CodexAgent(BaseAgent):
         Returns:
             Review dict with verdict, feedback, issues
         """
-        prompt = self._build_review_prompt(diff, validation_output)
+        prompt = self._build_review_prompt(diff, validation_output, context=context)
 
         if self.mode == "codex_cli":
             return await self._review_codex(prompt, timeout_sec, work_dir)
@@ -71,6 +72,7 @@ class CodexAgent(BaseAgent):
         plan_content: str,
         timeout_sec: int,
         work_dir: Optional[Path] = None,
+        context: Optional[str] = None,
     ) -> dict:
         """Generate task DAG from plan.
 
@@ -82,7 +84,7 @@ class CodexAgent(BaseAgent):
         Returns:
             Plan dict with tasks, edges, topo_order, parallel_batches
         """
-        prompt = self._build_plan_prompt(plan_content)
+        prompt = self._build_plan_prompt(plan_content, context=context)
 
         if self.mode == "codex_cli":
             return await self._plan_codex(prompt, timeout_sec, work_dir)
@@ -95,6 +97,7 @@ class CodexAgent(BaseAgent):
         diff: str,
         timeout_sec: int,
         work_dir: Optional[Path] = None,
+        context: Optional[str] = None,
     ) -> str:
         """Generate UAT cases as executable Python pytest code.
 
@@ -107,16 +110,22 @@ class CodexAgent(BaseAgent):
         Returns:
             Generated UAT Python code (pytest-compatible)
         """
-        prompt = self._build_uat_prompt(task_content, diff)
+        prompt = self._build_uat_prompt(task_content, diff, context=context)
 
         if self.mode == "codex_cli":
             return await self._uat_codex(prompt, timeout_sec, work_dir)
         else:
             return await self._uat_openai(prompt, timeout_sec)
 
-    def _build_review_prompt(self, diff: str, validation_output: str) -> str:
+    def _build_review_prompt(
+        self,
+        diff: str,
+        validation_output: str,
+        context: Optional[str] = None,
+    ) -> str:
         """Build review prompt."""
-        return f"""Review the following code changes and validation output.
+        context_block = f"\n## Task Context\n{context}\n" if context else ""
+        return f"""Review the following code changes and validation output.{context_block}
 
 Important: Do NOT scan the repo or look for AGENTS.md. Use only the inputs below.
 
@@ -143,9 +152,10 @@ Consider:
 
 Output ONLY the JSON, no other text."""
 
-    def _build_plan_prompt(self, plan_content: str) -> str:
+    def _build_plan_prompt(self, plan_content: str, context: Optional[str] = None) -> str:
         """Build planning prompt."""
-        return f"""Convert the following plan into a task dependency graph with enriched metadata.
+        context_block = f"\n## Plan Context\n{context}\n" if context else ""
+        return f"""Convert the following plan into a task dependency graph with enriched metadata.{context_block}
 
 Important: Do NOT scan the repo or look for AGENTS.md. Use only the plan content below.
 
@@ -185,9 +195,15 @@ Rules:
 
 Output ONLY the JSON, no other text."""
 
-    def _build_uat_prompt(self, task_content: str, diff: str) -> str:
+    def _build_uat_prompt(
+        self,
+        task_content: str,
+        diff: str,
+        context: Optional[str] = None,
+    ) -> str:
         """Build UAT generation prompt."""
-        return f"""Generate User Acceptance Tests (UAT) as executable Python pytest code for the following task and implementation.
+        context_block = f"\n## Task Context\n{context}\n" if context else ""
+        return f"""Generate User Acceptance Tests (UAT) as executable Python pytest code for the following task and implementation.{context_block}
 
 Important: Do NOT scan the repo or look for AGENTS.md. Use only the task and diff below.
 
@@ -420,22 +436,41 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
         env["HOME"] = str(self._isolated_codex_home)
         return env
 
+    def _resolve_isolated_codex_home(self) -> Path:
+        """Resolve a stable Codex home to avoid repeated temp copies."""
+        env_home = os.environ.get("AUTOPILOT_CODEX_HOME")
+        if env_home:
+            return Path(env_home).expanduser()
+
+        # Prefer a repo-local location if .autopilot is present.
+        cwd = Path.cwd()
+        for base in [cwd] + list(cwd.parents):
+            if (base / ".autopilot").exists():
+                return base / ".autopilot" / "codex-home"
+
+        # Fallback to a stable temp location.
+        return Path(tempfile.gettempdir()) / "autopilot-codex-home"
+
     def _create_isolated_codex_home(self) -> Path:
         """Create an isolated Codex home without MCP servers configured."""
-        temp_home = Path(tempfile.mkdtemp(prefix="codex-nomcp-"))
-        source_codex = Path.home() / ".codex"
-        target_codex = temp_home / ".codex"
-        if source_codex.exists():
-            shutil.copytree(source_codex, target_codex, dirs_exist_ok=True)
-        else:
-            target_codex.mkdir(parents=True, exist_ok=True)
+        target_home = self._resolve_isolated_codex_home()
+        target_codex = target_home / ".codex"
 
-        config_path = target_codex / "config.toml"
-        if config_path.exists():
-            config_text = config_path.read_text(encoding="utf-8")
-            config_path.write_text(self._strip_mcp_sections(config_text), encoding="utf-8")
+        # Only copy on first creation to avoid repeated large copies.
+        if not target_codex.exists() or not any(target_codex.iterdir()):
+            target_home.mkdir(parents=True, exist_ok=True)
+            source_codex = Path.home() / ".codex"
+            if source_codex.exists():
+                shutil.copytree(source_codex, target_codex, dirs_exist_ok=True)
+            else:
+                target_codex.mkdir(parents=True, exist_ok=True)
 
-        return temp_home
+            config_path = target_codex / "config.toml"
+            if config_path.exists():
+                config_text = config_path.read_text(encoding="utf-8")
+                config_path.write_text(self._strip_mcp_sections(config_text), encoding="utf-8")
+
+        return target_home
 
     @staticmethod
     def _strip_mcp_sections(config_text: str) -> str:

@@ -373,3 +373,11 @@ class TerminalDashboard:
         """
         if self.verbose:
             print(f"ℹ️  {message}")
+
+    def print_progress(self, message: str) -> None:
+        """Print a progress message regardless of verbosity.
+
+        Args:
+            message: Progress message
+        """
+        print(f"\n⏳ {message}")

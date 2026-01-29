@@ -50,7 +50,7 @@ class ExecutionLoop:
         """
         self.config = config
         self.verbose = verbose
-        self.max_workers = 1  # Default, can be overridden per execution
+        self.max_workers = 4  # Default, can be overridden per execution
 
         # State management
         state_path = state_path or Path(".autopilot/state.json")
@@ -123,7 +123,7 @@ class ExecutionLoop:
             logger.error(f"Task execution failed: {e}")
             return False
 
-    async def run_plan(self, plan_path: Path, max_workers: int = 1) -> bool:
+    async def run_plan(self, plan_path: Path, max_workers: int = 4) -> bool:
         """Run a plan file.
 
         Args:
@@ -136,10 +136,15 @@ class ExecutionLoop:
         logger.info(f"Running plan: {plan_path}")
 
         try:
+            self.terminal.print_progress("Submitting plan to Codex for DAG expansion")
             # Expand plan into DAG
             dag = await expand_plan(
                 plan_path=plan_path,
                 planner_config=self.config.planner.model_dump(),
+                progress_callback=self.terminal.print_progress,
+            )
+            self.terminal.print_progress(
+                f"DAG ready: {len(dag.tasks)} tasks, {len(dag.edges)} edges, {len(dag.parallel_batches)} batches"
             )
 
             # Validate DAG
@@ -293,6 +298,7 @@ class ExecutionLoop:
         task_id = task.task_id
         workdir = workdir or self.config.repo.root
         logger.info(f"Executing task: {task_id} - {task.title} (in {workdir})")
+        self.terminal.print_progress(f"Task {task_id}: Development started ({task.title})")
 
         # Create task branch (in worktree if provided)
         branch_name = f"autopilot/{task_id}"
@@ -326,6 +332,7 @@ class ExecutionLoop:
             logger.info(f"Iteration {iterations_used}/{max_iterations}")
 
             # Build
+            self.terminal.print_progress(f"Task {task_id}: Coding (iteration {iterations_used})")
             build_success = await self._build_step(
                 task_id,
                 task,
@@ -333,32 +340,40 @@ class ExecutionLoop:
                 build_context=last_validation_summary,
             )
             if not build_success:
+                self.terminal.print_progress(f"Task {task_id}: Failed during coding")
                 return False
 
             # Validate
+            self.terminal.print_progress(f"Task {task_id}: Updating (validation)")
             validate_success, validation_results, validation_summary = await self._validate_step(
                 task_id, task, workdir=workdir
             )
             if not validate_success:
+                self.terminal.print_progress(f"Task {task_id}: Updating (fix loop)")
                 last_validation_summary = validation_summary
                 # Feed into FIX loop
                 continue
             last_validation_summary = ""
 
             # Review
+            self.terminal.print_progress(f"Task {task_id}: Review")
             review_success = await self._review_step(task_id, task, validation_results, workdir=workdir)
             if not review_success:
+                self.terminal.print_progress(f"Task {task_id}: Updating (review changes)")
                 # Feed into FIX loop
                 continue
 
             # Generate UAT cases (if configured)
+            self.terminal.print_progress(f"Task {task_id}: UAT generation")
             uat_gen_success = await self._generate_uat_step(task_id, task, workdir=workdir)
             if not uat_gen_success:
                 logger.warning("UAT generation failed, continuing with existing UAT")
 
             # UAT
+            self.terminal.print_progress(f"Task {task_id}: UAT run")
             uat_success = await self._uat_step(task_id, task, workdir=workdir)
             if not uat_success:
+                self.terminal.print_progress(f"Task {task_id}: Updating (UAT fixes)")
                 # Feed into FIX loop
                 continue
 
@@ -381,7 +396,24 @@ class ExecutionLoop:
         if self.github and workdir == self.config.repo.root:
             await self._push_step(task_id, task, iterations_used)
 
+        self.terminal.print_progress(f"Task {task_id}: Completed")
         return True
+
+    def _format_task_context(self, task, phase: str) -> str:
+        """Format a concise task context for agent prompts."""
+        lines = [
+            f"Task ID: {task.task_id}",
+            f"Title: {task.title}",
+            f"Phase: {phase}",
+        ]
+        if task.allowed_paths:
+            lines.append(f"Allowed Paths: {', '.join(task.allowed_paths)}")
+        if task.constraints:
+            lines.append(f"Constraints: {', '.join(task.constraints)}")
+        if task.acceptance_criteria:
+            lines.append("Acceptance Criteria:")
+            lines.extend([f"- {item}" for item in task.acceptance_criteria])
+        return "\n".join(lines)
 
     async def _merge_worktree_to_main(self, worktree_path: Path, branch_name: str) -> None:
         """Merge worktree branch back to main branch.
@@ -436,7 +468,8 @@ class ExecutionLoop:
 
         try:
             # Execute builder
-            prompt = task.raw_content
+            context = self._format_task_context(task, phase="Development/Coding")
+            prompt = f"## Task Context\n{context}\n\n{task.raw_content}"
             if build_context:
                 prompt = f"{prompt}\n\n## Validation Feedback\n{build_context}\n"
             result = await self.builder.execute(
@@ -542,11 +575,13 @@ class ExecutionLoop:
                 return True
 
             # Execute reviewer
+            context = self._format_task_context(task, phase="Review")
             result = await self.reviewer.review(
                 diff=diff,
                 validation_output=validation_output,
                 timeout_sec=self.config.loop.review_timeout_sec,
                 work_dir=workdir,
+                context=context,
             )
 
             if result["verdict"] == "approve":
@@ -591,11 +626,13 @@ class ExecutionLoop:
                 diff = await self.git_ops.get_diff()
 
             # Generate UAT Python code using Codex
+            context = self._format_task_context(task, phase="UAT Generation")
             uat_content = await self.planner.generate_uat(
                 task_content=task.raw_content,
                 diff=diff,
                 timeout_sec=self.config.loop.uat_generate_timeout_sec,
                 work_dir=workdir,
+                context=context,
             )
 
             # Normalize content to executable Python
@@ -694,6 +731,7 @@ class ExecutionLoop:
                 diff=diff,
                 timeout_sec=self.config.orchestrator.final_uat_timeout_sec,
                 work_dir=self.config.repo.root,
+                context="Final UAT generation for completed DAG",
             )
 
             uat_code = self._normalize_uat_code(uat_content)
