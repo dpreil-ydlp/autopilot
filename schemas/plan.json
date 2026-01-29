@@ -8,7 +8,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "title", "description", "dependencies"],
+        "required": ["id", "title", "description"],
         "properties": {
           "id": {
             "type": "string",
@@ -21,6 +21,13 @@
           "description": {
             "type": "string",
             "description": "Detailed task description"
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "List of task IDs this task depends on"
           },
           "dependencies": {
             "type": "array",
