@@ -24,10 +24,19 @@ class CodexAgent(BaseAgent):
         """
         super().__init__(config)
         self.mode = config.get("mode", "codex_cli")
-        self.model = config.get("model") or os.environ.get("OPENAI_MODEL")
+        cfg_model = config.get("model")
+        if self.mode == "codex_cli":
+            # Codex CLI defaults to whatever is in ~/.codex/config.toml; Autopilot should be
+            # deterministic and not depend on the user's interactive defaults.
+            self.model = cfg_model or "gpt-5.2-codex"
+            self.model_reasoning_effort = config.get("model_reasoning_effort") or "medium"
+        else:
+            self.model = cfg_model or os.environ.get("OPENAI_MODEL")
+            self.model_reasoning_effort = None
         self.api_key_env = config.get("api_key_env", "OPENAI_API_KEY")
         self.json_schema_path = config.get("json_schema_path")
         self.disable_mcp = config.get("disable_mcp", True)
+        self.codex_home = config.get("codex_home")
         self.codex_overrides = config.get("codex_overrides", [])
         self._isolated_codex_home: Path | None = None
 
@@ -409,6 +418,8 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
     def _build_codex_command(self, prompt: str, schema_path: str | None = None) -> list[str]:
         """Build codex exec command with optional config overrides."""
         command = ["codex", "exec"]
+        if self.model:
+            command.extend(["-m", self.model])
         if schema_path:
             resolved = self._resolve_schema_path(schema_path)
             if resolved:
@@ -417,8 +428,10 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
                 logger.warning("Schema file not found: %s (running without schema)", schema_path)
 
         overrides = list(self.codex_overrides)
-        if self.disable_mcp and not any(o.startswith("mcp_servers") for o in overrides):
-            overrides.append("mcp_servers={}")
+        if self.model_reasoning_effort and not any(
+            o.startswith("model_reasoning_effort") for o in overrides
+        ):
+            overrides.append(f'model_reasoning_effort="{self.model_reasoning_effort}"')
 
         for override in overrides:
             command.extend(["-c", override])
@@ -460,6 +473,9 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
 
     def _resolve_isolated_codex_home(self) -> Path:
         """Resolve a stable Codex home to avoid repeated temp copies."""
+        if self.codex_home:
+            return Path(self.codex_home).expanduser()
+
         env_home = os.environ.get("AUTOPILOT_CODEX_HOME")
         if env_home:
             return Path(env_home).expanduser()
@@ -478,21 +494,42 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
         target_home = self._resolve_isolated_codex_home()
         target_codex = target_home / ".codex"
 
-        # Only copy on first creation to avoid repeated large copies.
-        if not target_codex.exists() or not any(target_codex.iterdir()):
-            target_home.mkdir(parents=True, exist_ok=True)
-            source_codex = Path.home() / ".codex"
-            if source_codex.exists():
-                shutil.copytree(source_codex, target_codex, dirs_exist_ok=True)
-            else:
-                target_codex.mkdir(parents=True, exist_ok=True)
+        target_codex.mkdir(parents=True, exist_ok=True)
 
-        # Always ensure MCP server blocks are stripped (idempotent). This avoids stale
-        # configs if the isolated home was created by an older Autopilot version.
+        # Copy only the minimum required Codex state (auth + config). Copying the entire
+        # ~/.codex directory can be extremely large (e.g., ~/.codex/tmp) and can exhaust disk.
+        source_codex = Path.home() / ".codex"
+        source_auth = source_codex / "auth.json"
+        target_auth = target_codex / "auth.json"
+        if source_auth.exists() and not target_auth.exists():
+            try:
+                shutil.copy2(source_auth, target_auth)
+            except Exception as e:
+                logger.warning("Failed to copy Codex auth.json into isolated home: %s", e)
+
         config_path = target_codex / "config.toml"
-        if config_path.exists():
+        if not config_path.exists():
+            # Minimal config; we pass model/effort overrides on the CLI too.
+            config_path.write_text(
+                "\n".join(
+                    [
+                        f'model = "{self.model}"',
+                        f'model_reasoning_effort = "{self.model_reasoning_effort}"',
+                        "[notice]",
+                        "hide_full_access_warning = true",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+        # Always ensure MCP server blocks are stripped (idempotent). This avoids stale configs
+        # if the isolated home was created by an older Autopilot version.
+        try:
             config_text = config_path.read_text(encoding="utf-8")
             config_path.write_text(self._strip_mcp_sections(config_text), encoding="utf-8")
+        except Exception as e:
+            logger.warning("Failed to sanitize Codex config.toml in isolated home: %s", e)
 
         return target_home
 

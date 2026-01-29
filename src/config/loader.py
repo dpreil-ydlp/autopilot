@@ -94,13 +94,15 @@ def create_default_config(config_path: Path) -> None:
         },
         "reviewer": {
             "mode": "codex_cli",
-            "model": None,
+            "model": "gpt-5.2-codex",
+            "model_reasoning_effort": "medium",
             "max_retries": 1,
             "disable_mcp": True,
         },
         "planner": {
             "mode": "codex_cli",
-            "model": None,
+            "model": "gpt-5.2-codex",
+            "model_reasoning_effort": "medium",
             "disable_mcp": True,
         },
         "builder": {

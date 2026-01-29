@@ -90,6 +90,7 @@ lint: ruff check .
 Notes:
 - If a task omits **Validation Commands**, Autopilot will use the defaults from `.autopilot/config.yml`.
 - Pytest "no tests ran" can be treated as success via `loop.allow_no_tests`.
+ - Plan/review runs use an isolated Codex profile (no MCP servers) and may override the Codex model; see config below.
 
 ### 2. Run Autopilot
 
@@ -131,6 +132,11 @@ autopilot recover
 
 Configuration file: `.autopilot/config.yml`
 
+When `planner.disable_mcp` / `reviewer.disable_mcp` are enabled, Autopilot runs Codex under an isolated HOME
+(default: `.autopilot/codex-home`) so your global `~/.codex` MCP server settings do not apply. Autopilot also
+passes `planner.model` / `reviewer.model` and `model_reasoning_effort` to Codex, so plan/review runs may use a
+different model than your interactive Codex default.
+
 ```yaml
 repo:
   root: /path/to/repo
@@ -162,13 +168,17 @@ safety:
 
 reviewer:
   mode: codex_cli  # or openai_api
-  model: null      # optional; uses OPENAI_MODEL if openai_api
+  model: gpt-5.2-codex
+  model_reasoning_effort: medium
   disable_mcp: true
+  codex_home: null   # optional; overrides AUTOPILOT_CODEX_HOME
 
 planner:
   mode: codex_cli  # or openai_api
-  model: null      # optional; uses OPENAI_MODEL if openai_api
+  model: gpt-5.2-codex
+  model_reasoning_effort: medium
   disable_mcp: true
+  codex_home: null   # optional; overrides AUTOPILOT_CODEX_HOME
 
 builder:
   cli_path: claude

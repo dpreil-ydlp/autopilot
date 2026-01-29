@@ -63,14 +63,22 @@ class ReviewerConfig(BaseModel):
 
     mode: str = Field(default="codex_cli", description="codex_cli or openai_api")
     model: str | None = Field(
-        default=None,
+        default="gpt-5.2-codex",
         description="Model for openai_api mode (falls back to OPENAI_MODEL)",
+    )
+    model_reasoning_effort: str | None = Field(
+        default="medium",
+        description="Reasoning effort hint for Codex CLI (e.g., none/low/medium/high/xhigh)",
     )
     api_key_env: str | None = Field(default=None, description="API key env var name")
     max_retries: int = Field(default=1, description="Max review retries")
     disable_mcp: bool = Field(
         default=True,
         description="Disable MCP server startup for Codex CLI runs",
+    )
+    codex_home: str | None = Field(
+        default=None,
+        description="Isolated Codex HOME directory (overrides AUTOPILOT_CODEX_HOME when set)",
     )
     json_schema_path: str = Field(default="schemas/review.json", description="Review schema path")
 
@@ -80,13 +88,21 @@ class PlannerConfig(BaseModel):
 
     mode: str = Field(default="codex_cli", description="codex_cli or openai_api")
     model: str | None = Field(
-        default=None,
+        default="gpt-5.2-codex",
         description="Model for openai_api mode (falls back to OPENAI_MODEL)",
+    )
+    model_reasoning_effort: str | None = Field(
+        default="medium",
+        description="Reasoning effort hint for Codex CLI (e.g., none/low/medium/high/xhigh)",
     )
     api_key_env: str | None = Field(default=None, description="API key env var name")
     disable_mcp: bool = Field(
         default=True,
         description="Disable MCP server startup for Codex CLI runs",
+    )
+    codex_home: str | None = Field(
+        default=None,
+        description="Isolated Codex HOME directory (overrides AUTOPILOT_CODEX_HOME when set)",
     )
     json_schema_path: str = Field(default="schemas/plan.json", description="Plan schema path")
 

@@ -1,6 +1,7 @@
 """Autopilot CLI entrypoint."""
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -146,6 +147,34 @@ def run(
         console=verbose and not quiet,
     )
 
+    if not quiet:
+        # Autopilot may use a different Codex model/effort than the user's interactive defaults.
+        # Make this explicit once at startup to avoid confusion.
+        def codex_notice(name: str, cfg) -> str | None:
+            if getattr(cfg, "mode", None) != "codex_cli":
+                return None
+            model = getattr(cfg, "model", None)
+            effort = getattr(cfg, "model_reasoning_effort", None)
+            disable_mcp = bool(getattr(cfg, "disable_mcp", False))
+            codex_home = getattr(cfg, "codex_home", None) or os.environ.get("AUTOPILOT_CODEX_HOME")
+            parts = [f"{name}=codex_cli"]
+            if model:
+                parts.append(f"model={model}")
+            if effort:
+                parts.append(f"effort={effort}")
+            if disable_mcp:
+                parts.append("mcp=off")
+                parts.append(f"home={codex_home or '.autopilot/codex-home'}")
+            return " ".join(parts)
+
+        notices = [
+            codex_notice("planner", config.planner),
+            codex_notice("reviewer", config.reviewer),
+        ]
+        msg = "; ".join([n for n in notices if n])
+        if msg:
+            click.echo(f"Codex: {msg}")
+
     # Run async execution loop
     success = asyncio.run(
         _run_async(
@@ -157,6 +186,7 @@ def run(
             max_workers=max_workers,
             resume=resume,
             verbose=verbose,
+            quiet=quiet,
         )
     )
 
@@ -172,6 +202,7 @@ async def _run_async(
     max_workers: int,
     resume: bool,
     verbose: bool,
+    quiet: bool,
 ) -> bool:
     """Async run implementation.
 
