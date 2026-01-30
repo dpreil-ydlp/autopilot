@@ -274,6 +274,14 @@ Plan runs also persist debugging artifacts:
 - Diff line count caps
 - TODO/FIXME detection
 - Network tool prohibition (optional)
+- Common doc artifact auto-fix: root-level `*.md` created out-of-scope is moved into the first allowed
+  directory when possible, otherwise backed up under `.autopilot/artifacts/out-of-scope/`
+
+### Merge Robustness
+
+Autopilot merges task branches back into the default branch using `--no-ff`. If the merge is blocked by
+unrelated local changes (e.g. dirty working tree in out-of-scope files), Autopilot falls back to a
+scope-limited apply for that task's `allowed_paths` (and may use `--autostash` when appropriate).
 
 ## Commands Reference
 

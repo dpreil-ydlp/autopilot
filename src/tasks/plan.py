@@ -122,10 +122,20 @@ async def expand_plan(
             goal = task_data.get("goal", description)
             acceptance_criteria = task_data.get("acceptance_criteria", [])
             raw_allowed_paths = task_data.get("allowed_paths")
+            inferred_allowed = _infer_allowed_paths(title, description, plan_path.parent)
+
+            def is_generic_allowed_paths(paths: list[str]) -> bool:
+                normalized = {p.rstrip("/").strip() for p in paths if p and str(p).strip()}
+                return bool(normalized) and normalized.issubset({"src", "tests"})
+
             if isinstance(raw_allowed_paths, list) and raw_allowed_paths:
                 allowed_paths = [str(p) for p in raw_allowed_paths if str(p).strip()]
+                # Prefer deterministic inference when the planner provided only generic defaults
+                # (src/tests) but we can clearly infer a more specific top-level folder.
+                if inferred_allowed and is_generic_allowed_paths(allowed_paths):
+                    allowed_paths = inferred_allowed
             else:
-                allowed_paths = _infer_allowed_paths(title, description, plan_path.parent) or [
+                allowed_paths = inferred_allowed or [
                     "src/",
                     "tests/",
                 ]

@@ -494,6 +494,26 @@ class ExecutionLoop:
         return paths
 
     @staticmethod
+    def _extract_merge_tracked_overwrite_paths(output: str) -> list[str]:
+        """Extract tracked paths from git's 'local changes would be overwritten by merge' error."""
+        lines = output.splitlines()
+        paths: list[str] = []
+        collecting = False
+        for line in lines:
+            if "Your local changes to the following files would be overwritten by merge" in line:
+                collecting = True
+                continue
+            if not collecting:
+                continue
+            if not line.strip():
+                continue
+            if line.lstrip() != line:
+                paths.append(line.strip())
+                continue
+            break
+        return paths
+
+    @staticmethod
     def _is_ignorable_untracked_path(path: str) -> bool:
         basename = Path(path).name
         return basename in {".DS_Store", "Thumbs.db", "desktop.ini"}
@@ -536,6 +556,52 @@ class ExecutionLoop:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(src), str(dst))
                 logger.warning("Moved untracked file blocking merge: %s -> %s", rel, dst)
+
+    async def _scoped_apply_branch(
+        self,
+        repo_root: Path,
+        branch_name: str,
+        allowed_paths: list[str],
+    ) -> None:
+        """Apply branch changes limited to allowed_paths onto the current branch.
+
+        This is a pragmatic fallback when a full merge is blocked by unrelated working tree state
+        (e.g. local changes in out-of-scope files).
+        """
+        if not allowed_paths:
+            raise Exception("Scoped apply requires allowed_paths")
+
+        manager = SubprocessManager(timeout_sec=60)
+
+        checkout = await manager.run(
+            ["git", "checkout", branch_name, "--", *allowed_paths],
+            cwd=repo_root,
+        )
+        if not checkout["success"]:
+            # If local changes in the allowed paths block checkout, force the checkout for those
+            # paths only. This keeps the blast radius limited to the task scope.
+            checkout = await manager.run(
+                ["git", "checkout", "-f", branch_name, "--", *allowed_paths],
+                cwd=repo_root,
+            )
+            if not checkout["success"]:
+                raise Exception(f"Scoped checkout failed: {checkout['output']}")
+
+        staged = await manager.run(["git", "diff", "--cached", "--name-only"], cwd=repo_root)
+        if staged["success"] and not staged["output"].strip():
+            await manager.run(["git", "add", "--", *allowed_paths], cwd=repo_root)
+            staged = await manager.run(["git", "diff", "--cached", "--name-only"], cwd=repo_root)
+
+        if staged["success"] and not staged["output"].strip():
+            logger.info("No in-scope changes to apply for %s; skipping scoped merge", branch_name)
+            return
+
+        commit_result = await manager.run(
+            ["git", "commit", "-m", f"Merge {branch_name} (scoped apply)"],
+            cwd=repo_root,
+        )
+        if not commit_result["success"]:
+            raise Exception(f"Scoped merge commit failed: {commit_result['output']}")
 
     async def _merge_worktree_to_main(
         self,
@@ -596,6 +662,55 @@ class ExecutionLoop:
                     ["git", "merge", "--no-ff", branch_name],
                     cwd=repo_root,
                 )
+                if not retry["success"]:
+                    raise Exception(f"Failed to merge branch: {retry['output']}")
+            elif (
+                "Your local changes to the following files would be overwritten by merge"
+                in result["output"]
+            ):
+                blocking_paths = self._extract_merge_tracked_overwrite_paths(result["output"])
+                if allowed_paths and blocking_paths:
+                    normalized = [p if p.endswith("/") else f"{p}/" for p in allowed_paths]
+                    in_scope_blockers = [
+                        p
+                        for p in blocking_paths
+                        if any(p.startswith(prefix) for prefix in normalized)
+                    ]
+                    if not in_scope_blockers:
+                        await self._scoped_apply_branch(
+                            repo_root=repo_root,
+                            branch_name=branch_name,
+                            allowed_paths=allowed_paths,
+                        )
+                        logger.info(
+                            "Applied %s onto %s via scoped apply (blocked by local changes: %s)",
+                            branch_name,
+                            default_branch,
+                            ", ".join(blocking_paths),
+                        )
+                        return
+
+                retry = await manager.run(
+                    ["git", "merge", "--no-ff", "--autostash", branch_name],
+                    cwd=repo_root,
+                )
+                if (
+                    not retry["success"]
+                    and "untracked working tree files would be overwritten by merge"
+                    in retry["output"]
+                ):
+                    blocking_untracked = self._extract_merge_untracked_overwrite_paths(
+                        retry["output"]
+                    )
+                    await self._handle_merge_untracked_overwrite(
+                        repo_root=repo_root,
+                        paths=blocking_untracked,
+                        allowed_paths=allowed_paths or [],
+                    )
+                    retry = await manager.run(
+                        ["git", "merge", "--no-ff", "--autostash", branch_name],
+                        cwd=repo_root,
+                    )
                 if not retry["success"]:
                     raise Exception(f"Failed to merge branch: {retry['output']}")
             else:
@@ -1049,34 +1164,90 @@ class ExecutionLoop:
             # Heuristic fix: if the agent created a new root-level markdown artifact outside
             # allowed paths, move it into the first allowed directory. This keeps strict scoping
             # while preventing common "wrote docs to repo root" failures.
-            allowed_dirs: list[str] = []
-            for prefix in allowed_paths:
-                candidate = prefix.rstrip("/")
-                if candidate and (workdir / candidate).is_dir():
-                    allowed_dirs.append(candidate)
+
+            def pick_primary_allowed_dir() -> str | None:
+                for prefix in allowed_paths:
+                    prefix = prefix.strip()
+                    if not prefix:
+                        continue
+                    if prefix.endswith("/"):
+                        return prefix.rstrip("/")
+                    candidate = workdir / prefix
+                    if candidate.is_dir():
+                        return prefix.rstrip("/")
+                return None
 
             moved = False
-            if allowed_dirs:
-                for path in list(violations):
-                    if violation_codes.get(path) != "??":
-                        continue
-                    if "/" in path:
-                        continue
-                    if not path.lower().endswith(".md"):
-                        continue
+            primary_dir = pick_primary_allowed_dir()
+            root_md_violations = [
+                p for p in violations if "/" not in p and p.lower().endswith(".md")
+            ]
+
+            if primary_dir and root_md_violations:
+                target_dir = workdir / primary_dir
+                target_dir.mkdir(parents=True, exist_ok=True)
+
+                timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+                backup_root = workdir / ".autopilot" / "artifacts" / "out-of-scope" / timestamp
+
+                for path in root_md_violations:
                     src = workdir / path
                     if not src.exists():
                         continue
-                    dst = workdir / allowed_dirs[0] / path
-                    if dst.exists():
-                        continue
+
+                    dst_rel = f"{primary_dir}/{path}"
+                    dst = workdir / dst_rel
                     dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(src), str(dst))
+
+                    code = violation_codes.get(path) or ""
+                    is_tracked = code != "??"
+
+                    if not dst.exists():
+                        if is_tracked:
+                            mv_res = await manager.run(
+                                ["git", "mv", "--", path, dst_rel],
+                                cwd=workdir,
+                            )
+                            if not mv_res["success"]:
+                                shutil.move(str(src), str(dst))
+                        else:
+                            shutil.move(str(src), str(dst))
+
+                        logger.warning(
+                            "Moved out-of-scope doc into scope for %s: %s -> %s",
+                            task_id,
+                            path,
+                            dst_rel,
+                        )
+                        moved = True
+                        continue
+
+                    # Destination already exists; preserve a copy and remove/revert the out-of-scope
+                    # doc so scope guards can proceed.
+                    try:
+                        backup_root.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(str(src), str(backup_root / path))
+                    except Exception:
+                        pass
+
+                    if is_tracked:
+                        restore_res = await manager.run(
+                            ["git", "restore", "--staged", "--worktree", "--", path],
+                            cwd=workdir,
+                        )
+                        if not restore_res["success"]:
+                            await manager.run(["git", "checkout", "--", path], cwd=workdir)
+                    else:
+                        try:
+                            src.unlink()
+                        except Exception:
+                            pass
+
                     logger.warning(
-                        "Moved out-of-scope doc into scope for %s: %s -> %s",
+                        "Backed up and removed out-of-scope doc for %s: %s -> %s",
                         task_id,
                         path,
-                        f"{allowed_dirs[0]}/{path}",
+                        backup_root / path,
                     )
                     moved = True
 
