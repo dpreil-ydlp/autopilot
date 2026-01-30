@@ -64,10 +64,11 @@ fi
 
 if ensure_pipx; then
   echo "Installing Autopilot via pipx (editable)..."
-  pipx install -e "$ROOT_DIR" --python "$PYTHON_BIN"
+  # Use --force so re-running the installer upgrades an existing pipx install.
+  pipx install -e "$ROOT_DIR" --python "$PYTHON_BIN" --force
 else
   echo "pipx not available. Installing Autopilot with system pip --user (editable)..."
-  "$PYTHON_BIN" -m pip install --user -e "$ROOT_DIR"
+  "$PYTHON_BIN" -m pip install --user --upgrade -e "$ROOT_DIR"
   USER_BIN="$("$PYTHON_BIN" -m site --user-base)/bin"
   if [[ ":$PATH:" != *":$USER_BIN:"* ]]; then
     echo ""

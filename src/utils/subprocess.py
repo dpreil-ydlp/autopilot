@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
+import os
 import shlex
+import signal
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +30,59 @@ class SubprocessError(Exception):
 
 class SubprocessManager:
     """Managed subprocess execution with timeouts and stuck detection."""
+
+    @staticmethod
+    async def _terminate_process(
+        process: asyncio.subprocess.Process,
+        timeout_sec: float = 2.0,
+    ) -> None:
+        """Terminate a subprocess and its children (best-effort).
+
+        Many commands (e.g. `npm run dev`) spawn child processes. If we only kill the parent,
+        orphaned children can keep consuming RAM/disk. On POSIX we start a new session and kill
+        the whole process group.
+        """
+        if process.returncode is not None:
+            return
+
+        # Try graceful termination first.
+        try:
+            if os.name != "nt":
+                os.killpg(process.pid, signal.SIGTERM)
+            else:
+                process.terminate()
+        except ProcessLookupError:
+            return
+        except Exception:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+
+        try:
+            await asyncio.wait_for(process.wait(), timeout=timeout_sec)
+            return
+        except Exception:
+            pass
+
+        # Escalate.
+        try:
+            if os.name != "nt":
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
+        except ProcessLookupError:
+            return
+        except Exception:
+            try:
+                process.kill()
+            except Exception:
+                pass
+
+        try:
+            await asyncio.wait_for(process.wait(), timeout=timeout_sec)
+        except Exception:
+            pass
 
     def __init__(
         self,
@@ -87,6 +142,7 @@ class SubprocessManager:
                 *command,
                 cwd=cwd,
                 env=env,
+                start_new_session=(os.name != "nt"),
                 stdout=asyncio.subprocess.PIPE if capture_output else None,
                 stderr=asyncio.subprocess.PIPE if capture_output else None,
             )
@@ -141,11 +197,7 @@ class SubprocessManager:
                         stuck = False
 
                     # Kill process
-                    try:
-                        process.kill()
-                        await process.wait()
-                    except Exception:
-                        pass
+                    await self._terminate_process(process)
 
                     timed_out = True
                     output = "".join(output_lines)
@@ -163,8 +215,7 @@ class SubprocessManager:
                     timed_out = False
                     stuck = False
                 except TimeoutError:
-                    process.kill()
-                    await process.wait()
+                    await self._terminate_process(process)
                     timed_out = True
                     output = ""
                     exit_code = None

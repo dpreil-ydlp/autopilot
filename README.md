@@ -57,6 +57,14 @@ autopilot init
 vim .autopilot/config.yml
 ```
 
+Tip: If you already had Autopilot installed via pipx, re-running `./install.sh` will now upgrade it
+(pipx install uses `--force`). You can confirm which binary you're running with:
+
+```bash
+autopilot doctor
+autopilot --version
+```
+
 ## Quick Start
 
 ### 1. Create a Task

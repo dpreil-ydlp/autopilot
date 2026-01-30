@@ -2,7 +2,9 @@
 
 import asyncio
 import os
+import shutil
 import sys
+from importlib import metadata
 from pathlib import Path
 
 import click
@@ -23,7 +25,15 @@ CONTEXT_SETTINGS = {
 }
 
 
+def _autopilot_version() -> str:
+    try:
+        return metadata.version("autopilot")
+    except metadata.PackageNotFoundError:
+        return "unknown"
+
+
 @click.group(context_settings=CONTEXT_SETTINGS)
+@click.version_option(_autopilot_version(), prog_name="autopilot")
 @click.option(
     "--config",
     "-c",
@@ -77,6 +87,19 @@ def init(ctx: click.Context, force: bool) -> None:
     except Exception as e:
         click.echo(f"✗ Failed to create configuration: {e}", err=True)
         sys.exit(1)
+
+
+@cli.command()
+@click.pass_context
+def doctor(ctx: click.Context) -> None:
+    """Print diagnostic info to confirm which Autopilot is running."""
+    click.echo(f"autopilot_version: {_autopilot_version()}")
+    click.echo(f"python: {sys.executable}")
+    click.echo(f"autopilot_entrypoint: {Path(__file__).resolve()}")
+    click.echo(f"which_autopilot: {shutil.which('autopilot')}")
+    codex_home = os.environ.get("AUTOPILOT_CODEX_HOME")
+    if codex_home:
+        click.echo(f"AUTOPILOT_CODEX_HOME: {codex_home}")
 
 
 @cli.command()
