@@ -429,7 +429,17 @@ class GitOps:
         Returns:
             List of worktree info dicts with 'path' and 'branch' keys
         """
-        result = await self.run_git(["worktree", "list", "--porcelain"])
+        # `git worktree list --porcelain` can fail when stale/prunable worktree metadata exists.
+        # In that case, prune and retry so runs can self-heal after aborted/manual cleanup.
+        result = await self.run_git(["worktree", "list", "--porcelain"], check=False)
+        if not result["success"] and "prunable gitdir file points to non-existent location" in (
+            result["output"] or ""
+        ):
+            await self.run_git(["worktree", "prune"], check=False)
+            result = await self.run_git(["worktree", "list", "--porcelain"], check=False)
+
+        if not result["success"]:
+            raise GitError(f"Git command failed: worktree list --porcelain\n{result['output']}")
 
         worktrees = []
         for line in result["output"].split("\n"):
@@ -454,10 +464,14 @@ class GitOps:
         Returns:
             True if worktree exists
         """
+        # If the directory doesn't exist, treat as non-existent even if git still references it.
+        # A subsequent create_worktree() should be able to recreate it after pruning.
+        if not worktree_path.exists():
+            return False
         worktrees = await self.list_worktrees()
         return any(str(w["path"]) == str(worktree_path) for w in worktrees)
 
     async def prune_worktrees(self) -> None:
         """Prune working tree files in $GIT_DIR/worktrees."""
-        await self.run_git(["worktree", "prune"])
+        await self.run_git(["worktree", "prune"], check=False)
         logger.info("Pruned worktrees")

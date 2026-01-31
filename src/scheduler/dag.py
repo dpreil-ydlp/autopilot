@@ -236,6 +236,13 @@ class Worker:
         worktree_dir = self.repo_root / ".autopilot" / "worktrees"
         self.worktree_path = worktree_dir / self.worker_id
 
+        # Self-heal stale worktree metadata (common after aborted runs/manual cleanup).
+        if self.git_ops:
+            try:
+                await self.git_ops.prune_worktrees()
+            except Exception:
+                pass
+
         # Create worktree if it doesn't exist
         if not await self.git_ops.worktree_exists(self.worktree_path):
             await self.git_ops.create_worktree(
@@ -391,19 +398,26 @@ class DAGScheduler:
         ready = compute_ready_set(self.dag, self.completed)
 
         for task_id, task in self.tasks.items():
+            # Never "revive" tasks that already reached a terminal state.
+            if task.status in (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.BLOCKED):
+                continue
+            if task.status == TaskStatus.RUNNING:
+                continue
+
             if task_id in self.completed:
                 task.status = TaskStatus.DONE
+                continue
+
+            # Check if blocked by dependencies
+            deps = {dep for (dep, to) in self.dag.edges if to == task_id}
+            if any(
+                self.tasks[dep].status == TaskStatus.FAILED for dep in deps if dep in self.tasks
+            ):
+                task.status = TaskStatus.BLOCKED
             elif task_id in ready:
                 task.status = TaskStatus.READY
-            elif task.status == TaskStatus.PENDING:
-                # Check if blocked by dependencies
-                deps = {dep for (dep, to) in self.dag.edges if to == task_id}
-                if any(
-                    self.tasks[dep].status == TaskStatus.FAILED for dep in deps if dep in self.tasks
-                ):
-                    task.status = TaskStatus.BLOCKED
-                else:
-                    task.status = TaskStatus.PENDING
+            else:
+                task.status = TaskStatus.PENDING
 
     def get_ready_tasks(self) -> list[str]:
         """Get list of tasks ready to execute.

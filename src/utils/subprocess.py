@@ -230,6 +230,12 @@ class SubprocessManager:
             }
 
         except FileNotFoundError:
+            # FileNotFoundError can mean either the executable is missing from PATH or the cwd
+            # does not exist. Distinguish the two so the caller can recover correctly.
+            if cwd is not None and not Path(cwd).exists():
+                raise SubprocessError(
+                    f"Working directory not found: {cwd} (while running: {command[0]})"
+                )
             raise SubprocessError(f"Command not found: {command[0]}")
         except Exception as e:
             raise SubprocessError(f"Subprocess error: {e}")

@@ -164,3 +164,43 @@ def test_is_complete():
     scheduler2.mark_task_complete("task1")
     scheduler2.mark_task_failed("task2", "error")
     assert scheduler2.is_complete()
+
+
+def test_failed_tasks_are_not_rescheduled():
+    """A failed task should not flip back to READY on subsequent scheduler ticks."""
+    dag = TaskDAG(
+        tasks={"task1": None},
+        edges=[],
+        topo_order=["task1"],
+        parallel_batches=[],
+    )
+
+    scheduler = DAGScheduler(dag, git_ops=None)
+    assert scheduler.get_ready_tasks() == ["task1"]
+
+    scheduler.mark_task_failed("task1", "boom")
+    assert scheduler.tasks["task1"].status == TaskStatus.FAILED
+
+    # Should remain FAILED and not be considered ready again.
+    assert scheduler.get_ready_tasks() == []
+    assert scheduler.tasks["task1"].status == TaskStatus.FAILED
+
+
+def test_failed_dependency_blocks_downstream():
+    """Downstream tasks should become BLOCKED when an upstream dep fails."""
+    dag = TaskDAG(
+        tasks={"task1": None, "task2": None},
+        edges=[("task1", "task2")],
+        topo_order=["task1", "task2"],
+        parallel_batches=[],
+    )
+
+    scheduler = DAGScheduler(dag, git_ops=None)
+    assert scheduler.get_ready_tasks() == ["task1"]
+
+    scheduler.mark_task_failed("task1", "boom")
+    scheduler.update_task_states()
+
+    assert scheduler.tasks["task1"].status == TaskStatus.FAILED
+    assert scheduler.tasks["task2"].status == TaskStatus.BLOCKED
+    assert scheduler.get_ready_tasks() == []
