@@ -623,10 +623,21 @@ class ExecutionLoop:
         current = await manager.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root)
         if not current["success"]:
             raise Exception(f"Failed to get current branch: {current['output']}")
-        if current["output"].strip() != default_branch:
+        current_branch = current["output"].strip()
+        if current_branch != default_branch:
             result = await manager.run(["git", "checkout", default_branch], cwd=repo_root)
             if not result["success"]:
-                raise Exception(f"Failed to checkout default branch: {result['output']}")
+                # If the configured default branch doesn't exist (common on fresh repos where
+                # Git still uses `master`), fall back to the current branch instead of failing.
+                if "pathspec" in (result["output"] or "") and default_branch in (result["output"] or ""):
+                    logger.warning(
+                        "Default branch %s not found; staying on %s for merge",
+                        default_branch,
+                        current_branch,
+                    )
+                    default_branch = current_branch
+                else:
+                    raise Exception(f"Failed to checkout default branch: {result['output']}")
 
         # Merge the task branch into default branch
         result = await manager.run(

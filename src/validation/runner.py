@@ -1,7 +1,7 @@
 """Validation runner for format, lint, tests, and UAT."""
 
 import logging
-import shlex
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -237,17 +237,13 @@ class ValidationRunner:
         Returns:
             ValidationResult
         """
-        # Parse command into arguments
-        try:
-            args = shlex.split(command)
-        except ValueError as e:
-            logger.error(f"Failed to parse command: {e}")
-            return ValidationResult(
-                command_type=command_type,
-                success=False,
-                exit_code=None,
-                output=f"Command parse error: {e}",
-            )
+        # Validation commands are user-configured strings and often rely on shell features
+        # (e.g. `&&`, pipes, env vars, `source`/`.`). Run them through a shell for robustness.
+        if os.name == "nt":
+            args = ["cmd", "/c", command]
+        else:
+            # Use bash for compatibility with common dev workflows (venv activation, etc).
+            args = ["bash", "-lc", command]
 
         # Run command
         manager = SubprocessManager(
