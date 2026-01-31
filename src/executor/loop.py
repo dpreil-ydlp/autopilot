@@ -1160,6 +1160,9 @@ class ExecutionLoop:
             return (
                 path.startswith(".autopilot/")
                 or path.startswith("logs/")
+                or "/__pycache__/" in f"/{path}/"
+                or path.endswith((".pyc", ".pyo"))
+                or path.startswith(".pytest_cache/")
                 or path.endswith("/.DS_Store")
                 or path == ".DS_Store"
             )
