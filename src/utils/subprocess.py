@@ -152,8 +152,9 @@ class SubprocessManager:
             output_lines = []
 
             if capture_output:
-                # Read output with timeout and stuck detection
-                timeout_task = asyncio.create_task(
+                # Read output concurrently while waiting on process completion. Do NOT treat the
+                # output reader completing first as a timeout (process.wait() can lag slightly).
+                read_task = asyncio.create_task(
                     self._read_with_timeout(
                         process,
                         last_output_time,
@@ -162,32 +163,13 @@ class SubprocessManager:
                         on_output_line,
                     )
                 )
-                wait_task = asyncio.create_task(process.wait())
 
-                # Wait for either completion or timeout
-                done, pending = await asyncio.wait(
-                    [timeout_task, wait_task],
-                    timeout=self.timeout_sec,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-
-                # Cancel pending tasks
-                for task in pending:
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
-
-                # Check results
-                if wait_task in done:
-                    # Process completed
-                    exit_code = process.returncode
-                    output = "".join(output_lines)
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=self.timeout_sec)
                     timed_out = False
                     stuck = False
-                else:
-                    # Timeout occurred
+                    exit_code = process.returncode
+                except asyncio.TimeoutError:
                     if self.stuck_no_output_sec:
                         time_since_output = (
                             datetime.now() - last_output_time["value"]
@@ -196,12 +178,21 @@ class SubprocessManager:
                     else:
                         stuck = False
 
-                    # Kill process
                     await self._terminate_process(process)
-
                     timed_out = True
-                    output = "".join(output_lines)
                     exit_code = None
+
+                # Give the reader a moment to drain any remaining buffered output.
+                try:
+                    await asyncio.wait_for(read_task, timeout=2.0)
+                except Exception:
+                    read_task.cancel()
+                    try:
+                        await read_task
+                    except Exception:
+                        pass
+
+                output = "".join(output_lines)
 
                 logger.info(
                     f"Command completed: exit_code={exit_code}, timed_out={timed_out}, stuck={stuck}"
@@ -214,7 +205,7 @@ class SubprocessManager:
                     output = ""
                     timed_out = False
                     stuck = False
-                except TimeoutError:
+                except asyncio.TimeoutError:
                     await self._terminate_process(process)
                     timed_out = True
                     output = ""

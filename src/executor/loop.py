@@ -325,6 +325,7 @@ class ExecutionLoop:
         max_iterations = self.config.loop.max_iterations
         iterations_used = 0
         last_validation_summary = ""
+        task_converged = False
         for iteration in range(max_iterations):
             iterations_used = iteration + 1
             logger.info(f"Iteration {iterations_used}/{max_iterations}")
@@ -379,7 +380,14 @@ class ExecutionLoop:
                 continue
 
             # Task complete
+            task_converged = True
             break
+
+        if not task_converged:
+            logger.error("Task %s did not converge after %s iterations", task_id, max_iterations)
+            self.terminal.print_progress(f"Task {task_id}: Failed (max iterations)")
+            self.machine.update_task(task_id, status="failed")
+            return False
 
         # Commit changes (in worktree if applicable)
         commit_ok = await self._commit_step(task_id, task, workdir=workdir)

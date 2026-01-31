@@ -200,6 +200,9 @@ builder:
   system_prompt: null
 ```
 
+Validation commands are executed through a shell (`bash -lc` on macOS/Linux), so `&&`, env vars, and other
+common shell patterns work as expected.
+
 ## Task File Format
 
 Tasks are Markdown files with structured sections:
