@@ -1175,6 +1175,16 @@ class ExecutionLoop:
                     candidate = workdir / prefix
                     if candidate.is_dir():
                         return prefix.rstrip("/")
+                    # If the allowed path is a file (e.g. "frontend/FOO.md"), fall back to the
+                    # containing directory so we can relocate out-of-scope root docs into scope.
+                    parent = candidate.parent
+                    if parent != workdir:
+                        try:
+                            rel = parent.relative_to(workdir)
+                        except Exception:
+                            continue
+                        if str(rel) != ".":
+                            return str(rel)
                 return None
 
             moved = False

@@ -578,7 +578,7 @@ def recover(
             for pid, cmd in proc_result.candidates:
                 click.echo(f"  {pid} {cmd}")
         if proc_result.terminated:
-            click.echo("Terminated Codex PIDs:")
+            click.echo("Would terminate Codex PIDs:" if dry_run else "Terminated Codex PIDs:")
             for pid in proc_result.terminated:
                 click.echo(f"  {pid}")
         errors.extend(proc_result.errors)
@@ -604,7 +604,7 @@ def recover(
         errors.extend(result.errors)
 
     if removed:
-        click.echo("\nRemoved:")
+        click.echo("\nWould remove:" if dry_run else "\nRemoved:")
         for path in removed:
             click.echo(f"  {path}")
     else:
