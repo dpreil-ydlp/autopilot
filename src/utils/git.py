@@ -376,6 +376,17 @@ class GitOps:
         result = await self.run_git(args, check=False)
 
         if not result["success"]:
+            output = (result.get("output") or "").lower()
+            if "missing but already registered worktree" in output:
+                # Self-heal stale worktree metadata (git can keep an entry even if the directory
+                # was deleted). Prune and retry with -f.
+                await self.run_git(["worktree", "prune"], check=False)
+                retry_args = ["worktree", "add", "-f"]
+                retry_args.extend(args[2:])  # keep original spec after "worktree add"
+                result = await self.run_git(retry_args, check=False)
+                if result["success"]:
+                    logger.info(f"Created worktree: {worktree_path} (branch: {branch})")
+                    return
             raise GitError(f"Failed to create worktree: {result['output']}")
 
         logger.info(f"Created worktree: {worktree_path} (branch: {branch})")
@@ -409,19 +420,34 @@ class GitOps:
         if not commit_result["success"]:
             raise GitError(f"Failed to create initial commit: {commit_result['output']}")
 
-    async def remove_worktree(self, worktree_path: Path) -> None:
+    async def remove_worktree(self, worktree_path: Path, force: bool = True) -> None:
         """Remove a git worktree.
 
         Args:
             worktree_path: Path to worktree to remove
+            force: Force removal even if the worktree has untracked/modified files
         """
-        # Try to prune worktree first (cleaner removal)
-        await self.run_git(
-            ["worktree", "remove", str(worktree_path)],
-            check=False,
-        )
+        args = ["worktree", "remove"]
+        if force:
+            args.append("--force")
+        args.append(str(worktree_path))
 
-        logger.info(f"Removed worktree: {worktree_path}")
+        result = await self.run_git(args, check=False)
+        if result["success"]:
+            logger.info(f"Removed worktree: {worktree_path}")
+            return
+
+        # Retry with --force if the non-forced attempt failed.
+        if not force:
+            retry = await self.run_git(
+                ["worktree", "remove", "--force", str(worktree_path)],
+                check=False,
+            )
+            if retry["success"]:
+                logger.info(f"Removed worktree: {worktree_path}")
+                return
+
+        logger.warning("Failed to remove worktree %s: %s", worktree_path, result["output"])
 
     async def list_worktrees(self) -> list[dict]:
         """List all git worktrees.

@@ -1312,7 +1312,21 @@ class ExecutionLoop:
 
         # Stage only in-scope paths (plus any already-staged housekeeping changes).
         if allowed_paths:
-            add_cmd = ["git", "add", "--", *allowed_paths]
+            to_add: list[str] = []
+            for raw in allowed_paths:
+                path = (raw or "").strip()
+                if not path:
+                    continue
+                probe = workdir / path.rstrip("/")
+                if probe.exists():
+                    to_add.append(path)
+                else:
+                    logger.warning(
+                        "Skipping non-existent allowed_path for %s: %s",
+                        task_id,
+                        path,
+                    )
+            add_cmd = ["git", "add", "--", *(to_add or allowed_paths)]
         else:
             logger.warning("Task %s has no allowed_paths; staging all changes", task_id)
             add_cmd = ["git", "add", "."]
