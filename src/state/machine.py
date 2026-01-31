@@ -172,6 +172,15 @@ class OrchestratorMachine:
         for key, value in updates.items():
             setattr(task, key, value)
 
+        # Best-effort: track a "current task" for CLI/UX even when running in parallel.
+        status = updates.get("status")
+        if status == "running":
+            self.state.current_task_id = task_id
+            self.state.scheduler.current_task_id = task_id
+        elif status in {"done", "failed", "blocked"} and self.state.current_task_id == task_id:
+            self.state.current_task_id = None
+            self.state.scheduler.current_task_id = None
+
         task.updated_at = self.state.updated_at
         save_state(self.state, self.state_path)
 
@@ -185,3 +194,13 @@ class OrchestratorMachine:
             TaskState or None
         """
         return self.state.tasks.get(task_id)
+
+    def update_scheduler(self, **updates) -> None:
+        """Update scheduler state.
+
+        This is used to keep the persisted state in sync with the in-memory scheduler.
+        """
+        sched = self.state.scheduler
+        for key, value in updates.items():
+            setattr(sched, key, value)
+        save_state(self.state, self.state_path)

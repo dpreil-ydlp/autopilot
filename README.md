@@ -2,7 +2,7 @@
 
 **Status**: 🚧 Under Active Development (Phase 1 - Foundation)
 
-Autopilot is a local-first controller that orchestrates a "builder + reviewer" loop using Claude Code CLI (builder) and Codex CLI/OpenAI API (reviewer). The system executes task files as a state machine with multi-worker DAG scheduling, validation, UAT, and git operations.
+Autopilot is a local-first controller that orchestrates a "builder + reviewer" loop using Claude Code CLI by default (builder) and Codex CLI/OpenAI API (planner/reviewer). The system executes task files as a state machine with multi-worker DAG scheduling, validation, UAT, and git operations. You can optionally use Codex CLI as the builder if you prefer a more deterministic, diff-only workflow.
 
 ## Architecture Overview
 
@@ -27,9 +27,10 @@ Autopilot is a local-first controller that orchestrates a "builder + reviewer" l
 ### Prerequisites
 
 - Python 3.11+
-- Claude Code CLI (installed and in PATH)
 - Git
-- Optional: Codex CLI or OpenAI API key
+- Claude Code CLI (installed and in PATH)
+- Optional: Codex CLI (required if you set `planner.mode: codex_cli` or `reviewer.mode: codex_cli`, or if `builder.mode: codex_cli`)
+- Optional: OpenAI API key (only required if using `openai_api` modes)
 
 ### Setup
 
@@ -193,11 +194,19 @@ planner:
   codex_home: null   # optional; overrides AUTOPILOT_CODEX_HOME
 
 builder:
+  mode: claude  # or codex_cli or openai_api
   cli_path: claude
+  max_retries: 1
   permission_mode: bypassPermissions
   stream_output: true
   stream_log_interval_sec: 1.5
   system_prompt: null
+
+  # Codex builder settings (used when mode: codex_cli/openai_api)
+  model: gpt-5.2-codex
+  model_reasoning_effort: medium
+  disable_mcp: true
+  codex_home: null   # optional; overrides AUTOPILOT_CODEX_HOME
 ```
 
 Validation commands are executed through a shell (`bash -lc` on macOS/Linux), so `&&`, env vars, and other

@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 from ..utils.subprocess import SubprocessError, SubprocessManager
@@ -33,12 +34,14 @@ class CodexAgent(BaseAgent):
         else:
             self.model = cfg_model or os.environ.get("OPENAI_MODEL")
             self.model_reasoning_effort = None
-        self.api_key_env = config.get("api_key_env", "OPENAI_API_KEY")
+        # Some configs specify api_key_env=null; treat that as unset.
+        self.api_key_env = config.get("api_key_env") or "OPENAI_API_KEY"
         self.json_schema_path = config.get("json_schema_path")
         self.disable_mcp = config.get("disable_mcp", True)
         self.codex_home = config.get("codex_home")
         self.codex_overrides = config.get("codex_overrides", [])
         self._isolated_codex_home: Path | None = None
+        self.max_retries = config.get("max_retries", 1)
 
     async def execute(
         self,
@@ -46,8 +49,189 @@ class CodexAgent(BaseAgent):
         timeout_sec: int,
         work_dir: Path | None = None,
     ) -> dict:
-        """Codex doesn't support build mode - use Claude agent."""
-        raise NotImplementedError("Use Claude agent for build")
+        """Execute build using Codex/OpenAI.
+
+        This is used for code generation steps. The agent must output either:
+        - a unified git diff (preferred), or
+        - the literal marker: NO_CHANGES
+        """
+        wrapped_prompt = self._wrap_build_prompt(prompt)
+        retries = 0
+        last_error: Exception | None = None
+
+        while retries <= self.max_retries:
+            try:
+                if self.mode == "codex_cli":
+                    manager = SubprocessManager(timeout_sec=timeout_sec)
+                    result = await manager.run(
+                        self._build_codex_command(wrapped_prompt),
+                        cwd=work_dir,
+                        env=self._get_codex_env(),
+                    )
+                    output_text = result["output"]
+                else:
+                    output_text = await self._build_openai(wrapped_prompt, timeout_sec)
+                    result = {
+                        "success": True,
+                        "output": output_text,
+                        "exit_code": 0,
+                        "timed_out": False,
+                        "stuck": False,
+                    }
+
+                if not output_text.strip():
+                    if result.get("success"):
+                        return {**result, "success": True, "summary": None}
+                    raise AgentError("Build produced no output.")
+
+                diff = self._extract_diff(output_text)
+                if diff:
+                    await self._apply_diff(diff, work_dir)
+                elif "NO_CHANGES" not in output_text:
+                    raise AgentError(
+                        "Build output did not include a unified diff or NO_CHANGES marker."
+                    )
+
+                return {**result, "success": True, "summary": None}
+
+            except SubprocessError as e:
+                last_error = e
+                if e.timed_out or e.stuck:
+                    retries += 1
+                    logger.warning(
+                        "Build timed out or stuck (retry %s/%s)", retries, self.max_retries
+                    )
+                    continue
+                raise AgentError(f"Build subprocess error: {e}")
+            except Exception as e:
+                last_error = e
+                break
+
+        raise AgentError(f"Build failed after {retries} retries: {last_error}")
+
+    def _wrap_build_prompt(self, prompt: str) -> str:
+        """Wrap prompt with diff-only instruction."""
+        return (
+            "You are running in non-interactive mode. "
+            "Output ONLY a unified git diff that can be applied with `git apply`. "
+            "Do NOT include commentary, explanations, or code fences. "
+            "Your output must start with 'diff --git' or '--- a/'. "
+            "If no changes are needed, output exactly: NO_CHANGES.\n\n"
+            f"{prompt}"
+        )
+
+    async def _build_openai(self, prompt: str, timeout_sec: int) -> str:
+        """Build using OpenAI API (chat.completions)."""
+        try:
+            import openai
+
+            api_key = os.environ.get(self.api_key_env)
+            if not api_key:
+                raise AgentError(f"API key not found: {self.api_key_env}")
+            if not self.model:
+                raise AgentError("Model not configured. Set builder.model or OPENAI_MODEL.")
+
+            client = openai.OpenAI(api_key=api_key)
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                timeout=timeout_sec,
+            )
+            return response.choices[0].message.content or ""
+        except Exception as e:
+            raise AgentError(f"OpenAI build error: {e}")
+
+    def _extract_diff(self, output: str) -> str:
+        """Extract a unified diff from output (handles preambles/fences)."""
+
+        def _looks_like_diff(text: str) -> bool:
+            return "diff --git" in text or ("\n--- " in f"\n{text}" and "\n+++ " in f"\n{text}")
+
+        # Prefer fenced diff blocks if present.
+        if "```" in output:
+            sections = output.split("```")
+            diff_blocks = []
+            for i in range(1, len(sections), 2):
+                block = sections[i].strip()
+                if _looks_like_diff(block):
+                    diff_blocks.append(block)
+            if diff_blocks:
+                return diff_blocks[-1]
+
+        # Fallback: find first diff-like line in raw output.
+        lines = output.splitlines()
+        last_idx = None
+        for idx, line in enumerate(lines):
+            if line.startswith("diff --git"):
+                last_idx = idx
+            if line.startswith("--- "):
+                if idx + 1 < len(lines) and lines[idx + 1].startswith("+++ "):
+                    last_idx = idx
+
+        if last_idx is not None:
+            return "\n".join(lines[last_idx:]).strip()
+        return ""
+
+    async def _apply_diff(self, diff: str, work_dir: Path | None) -> None:
+        """Apply diff with git apply in working directory."""
+        target_dir = work_dir or Path.cwd()
+        patch_dir = target_dir / ".autopilot" / "patches"
+        patch_dir.mkdir(parents=True, exist_ok=True)
+        patch_path = patch_dir / f"codex_{int(time.time())}.diff"
+        patch_text = self._sanitize_diff(diff)
+        if not patch_text.endswith("\n"):
+            patch_text = f"{patch_text}\n"
+        patch_path.write_text(patch_text, encoding="utf-8")
+
+        manager = SubprocessManager(timeout_sec=60)
+        result = await manager.run(
+            ["git", "apply", "--whitespace=nowarn", str(patch_path)],
+            cwd=target_dir,
+        )
+        if result["success"]:
+            return
+
+        result = await manager.run(
+            ["git", "apply", "--3way", "--whitespace=nowarn", str(patch_path)],
+            cwd=target_dir,
+        )
+        if not result["success"]:
+            raise AgentError(f"Failed to apply Codex diff: {result['output']}")
+
+    def _sanitize_diff(self, diff: str) -> str:
+        """Normalize diff lines to reduce corruption from missing prefixes."""
+        lines = diff.splitlines()
+        sanitized: list[str] = []
+        in_hunk = False
+
+        for line in lines:
+            if line.startswith("diff --git"):
+                in_hunk = False
+                sanitized.append(line)
+                continue
+            if line.startswith(("index ", "deleted file mode", "new file mode")):
+                sanitized.append(line)
+                continue
+            if line.startswith(("--- ", "+++ ")):
+                sanitized.append(line)
+                continue
+            if line.startswith("@@"):
+                in_hunk = True
+                sanitized.append(line)
+                continue
+            if line.startswith("\\ No newline"):
+                sanitized.append(line)
+                continue
+
+            if in_hunk:
+                if line.startswith(("+", "-", " ")):
+                    sanitized.append(line)
+                else:
+                    sanitized.append(f"+{line}")
+            else:
+                sanitized.append(line)
+
+        return "\n".join(sanitized)
 
     async def review(
         self,

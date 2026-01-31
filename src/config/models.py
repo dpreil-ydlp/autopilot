@@ -110,6 +110,32 @@ class PlannerConfig(BaseModel):
 class BuilderConfig(BaseModel):
     """Builder agent configuration."""
 
+    mode: str = Field(
+        default="claude",
+        description="Builder mode: codex_cli | openai_api | claude",
+    )
+    model: str | None = Field(
+        default="gpt-5.2-codex",
+        description="Model for codex_cli/openai_api builder (falls back to OPENAI_MODEL for openai_api)",
+    )
+    model_reasoning_effort: str | None = Field(
+        default="medium",
+        description="Reasoning effort hint for Codex CLI (e.g., none/low/medium/high/xhigh)",
+    )
+    api_key_env: str | None = Field(default=None, description="API key env var name (openai_api)")
+    disable_mcp: bool = Field(
+        default=True,
+        description="Disable MCP server startup for Codex CLI runs",
+    )
+    codex_home: str | None = Field(
+        default=None,
+        description="Isolated Codex HOME directory (overrides AUTOPILOT_CODEX_HOME when set)",
+    )
+    codex_overrides: list[str] = Field(
+        default_factory=list,
+        description="Extra Codex CLI -c overrides for builder",
+    )
+
     cli_path: str = Field(default="claude", description="Claude Code CLI path")
     max_retries: int = Field(default=1, description="Max build retries")
     allowed_skills: list[str] = Field(default_factory=list, description="Allowed skills")

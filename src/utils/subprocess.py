@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import shlex
+import shutil
 import signal
 from collections.abc import Callable
 from datetime import datetime
@@ -138,14 +139,39 @@ class SubprocessManager:
             log_path = self.log_dir / f"cmd_{timestamp}.log"
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                *command,
-                cwd=cwd,
-                env=env,
-                start_new_session=(os.name != "nt"),
-                stdout=asyncio.subprocess.PIPE if capture_output else None,
-                stderr=asyncio.subprocess.PIPE if capture_output else None,
-            )
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *command,
+                    cwd=cwd,
+                    env=env,
+                    start_new_session=(os.name != "nt"),
+                    stdout=asyncio.subprocess.PIPE if capture_output else None,
+                    stderr=asyncio.subprocess.PIPE if capture_output else None,
+                )
+            except FileNotFoundError:
+                # If the caller provided a stripped env (common when overriding HOME),
+                # ensure PATH is present so executables like `git` can be resolved.
+                retry_env = None
+                if env is not None and "PATH" not in env:
+                    inherited_path = os.environ.get("PATH")
+                    if inherited_path:
+                        retry_env = dict(env)
+                        retry_env["PATH"] = inherited_path
+
+                resolved = None
+                if not os.path.isabs(command[0]):
+                    resolved = shutil.which(command[0], path=(retry_env or env or os.environ).get("PATH"))
+                if resolved:
+                    command = [resolved, *command[1:]]
+
+                process = await asyncio.create_subprocess_exec(
+                    *command,
+                    cwd=cwd,
+                    env=retry_env or env,
+                    start_new_session=(os.name != "nt"),
+                    stdout=asyncio.subprocess.PIPE if capture_output else None,
+                    stderr=asyncio.subprocess.PIPE if capture_output else None,
+                )
 
             # Track output for stuck detection
             last_output_time = {"value": datetime.now()}

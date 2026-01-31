@@ -70,7 +70,12 @@ class ExecutionLoop:
         )
 
         # Agents
-        self.builder = ClaudeAgent(config.builder.model_dump())
+        builder_cfg = config.builder.model_dump()
+        builder_mode = (builder_cfg.get("mode") or "claude").lower()
+        if builder_mode == "claude":
+            self.builder = ClaudeAgent(builder_cfg)
+        else:
+            self.builder = CodexAgent(builder_cfg)
         self.reviewer = CodexAgent(config.reviewer.model_dump())
         self.planner = CodexAgent(config.planner.model_dump())
 
@@ -186,6 +191,18 @@ class ExecutionLoop:
             logger.error("No tasks to execute in DAG")
             return False
 
+        # Initialize persisted scheduler stats for UX/monitoring.
+        stats = scheduler.get_stats()
+        self.machine.update_scheduler(
+            tasks_total=stats.total,
+            tasks_done=stats.done,
+            tasks_failed=stats.failed,
+            tasks_running=stats.running,
+            tasks_blocked=stats.blocked,
+            tasks_pending=stats.pending + stats.ready,
+            current_task_id=None,
+        )
+
         # Update state
         self.machine.update_task(
             list(dag.tasks.keys())[0],
@@ -265,6 +282,16 @@ class ExecutionLoop:
                     logger.error(f"Task failed: {task_id} (worker: {worker_id})")
 
             # Update dashboard
+            stats = scheduler.get_stats()
+            self.machine.update_scheduler(
+                tasks_total=stats.total,
+                tasks_done=stats.done,
+                tasks_failed=stats.failed,
+                tasks_running=stats.running,
+                tasks_blocked=stats.blocked,
+                tasks_pending=stats.pending + stats.ready,
+                current_task_id=self.machine.state.current_task_id,
+            )
             self.dashboard.update()
             self.terminal.print_state(self.machine.state)
 
