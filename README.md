@@ -137,6 +137,9 @@ autopilot stop
 autopilot recover
 ```
 
+Note: `autopilot recover` no longer terminates running Codex processes by default. If you want that,
+run `autopilot recover --kill-codex` explicitly.
+
 ## Configuration
 
 Configuration file: `.autopilot/config.yml`

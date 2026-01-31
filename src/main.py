@@ -519,8 +519,8 @@ def clean(
 @cli.command()
 @click.option(
     "--kill-codex/--no-kill-codex",
-    default=True,
-    help="Terminate running Codex CLI processes",
+    default=False,
+    help="Terminate running Codex CLI processes (off by default)",
 )
 @click.option(
     "--codex-temp/--no-codex-temp",
