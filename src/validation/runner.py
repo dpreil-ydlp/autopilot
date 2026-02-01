@@ -2,6 +2,7 @@
 
 import logging
 import os
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -237,6 +238,11 @@ class ValidationRunner:
         Returns:
             ValidationResult
         """
+        # Some task plans emit `pytest ...` commands, but the `pytest` entrypoint may not be on
+        # PATH in non-interactive shells. Prefer `python3 -m pytest` when we can detect it.
+        if command_type in {"tests", "uat"}:
+            command = self._rewrite_pytest_entrypoint(command)
+
         # Validation commands are user-configured strings and often rely on shell features
         # (e.g. `&&`, pipes, env vars, `source`/`.`). Run them through a shell for robustness.
         if os.name == "nt":
@@ -290,6 +296,43 @@ class ValidationRunner:
                 exit_code=None,
                 output=f"Execution error: {e}",
             )
+
+    @staticmethod
+    def _rewrite_pytest_entrypoint(command: str) -> str:
+        """Rewrite leading `pytest` invocation to `python3 -m pytest` when possible.
+
+        This preserves common patterns like `ENV=1 pytest -q` by only rewriting the first
+        non-assignment token.
+        """
+        try:
+            parts = shlex.split(command, posix=(os.name != "nt"))
+        except Exception:
+            return command
+
+        if not parts:
+            return command
+
+        idx = 0
+        for i, token in enumerate(parts):
+            # Stop at first non KEY=VALUE assignment.
+            if token.startswith("-") or "=" not in token:
+                idx = i
+                break
+            key = token.split("=", 1)[0]
+            if not key or not key.replace("_", "").isalnum():
+                idx = i
+                break
+        else:
+            idx = len(parts)
+
+        if idx < len(parts) and parts[idx] == "pytest":
+            parts[idx : idx + 1] = ["python3", "-m", "pytest"]
+            try:
+                return shlex.join(parts)
+            except Exception:
+                return " ".join(parts)
+
+        return command
 
     def get_failure_summary(self, results: dict[str, ValidationResult]) -> str:
         """Generate summary of validation failures.
