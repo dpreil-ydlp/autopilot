@@ -184,19 +184,21 @@ class CodexAgent(BaseAgent):
         patch_path.write_text(patch_text, encoding="utf-8")
 
         manager = SubprocessManager(timeout_sec=60)
-        result = await manager.run(
+        apply_attempts = [
             ["git", "apply", "--whitespace=nowarn", str(patch_path)],
-            cwd=target_dir,
-        )
-        if result["success"]:
-            return
-
-        result = await manager.run(
+            # Some LLM diffs have incorrect hunk line counts; --recount fixes many of these.
+            ["git", "apply", "--recount", "--whitespace=nowarn", str(patch_path)],
             ["git", "apply", "--3way", "--whitespace=nowarn", str(patch_path)],
-            cwd=target_dir,
-        )
-        if not result["success"]:
-            raise AgentError(f"Failed to apply Codex diff: {result['output']}")
+            ["git", "apply", "--3way", "--recount", "--whitespace=nowarn", str(patch_path)],
+        ]
+
+        last = None
+        for cmd in apply_attempts:
+            last = await manager.run(cmd, cwd=target_dir)
+            if last["success"]:
+                return
+
+        raise AgentError(f"Failed to apply Codex diff: {last['output'] if last else ''}")
 
     def _sanitize_diff(self, diff: str) -> str:
         """Normalize diff lines to reduce corruption from missing prefixes."""

@@ -335,30 +335,31 @@ class ClaudeAgent(BaseAgent):
         patch_path.write_text(patch_text, encoding="utf-8")
 
         manager = SubprocessManager(timeout_sec=60)
-        result = await manager.run(
+        apply_attempts = [
             ["git", "apply", "--whitespace=nowarn", str(patch_path)],
+            # Some LLM diffs have incorrect hunk line counts; --recount fixes many of these.
+            ["git", "apply", "--recount", "--whitespace=nowarn", str(patch_path)],
+            # Fallback to 3-way apply for patch context mismatches
+            ["git", "apply", "--3way", "--whitespace=nowarn", str(patch_path)],
+            ["git", "apply", "--3way", "--recount", "--whitespace=nowarn", str(patch_path)],
+        ]
+
+        last = None
+        for cmd in apply_attempts:
+            last = await manager.run(cmd, cwd=target_dir)
+            if last["success"]:
+                return
+
+        # If Claude applied edits directly, accept working tree changes
+        status = await manager.run(
+            ["git", "status", "--porcelain"],
             cwd=target_dir,
         )
-        if result["success"]:
+        if status["output"].strip():
+            logger.warning("Claude diff failed to apply but working tree has changes; continuing")
             return
 
-        # Fallback to 3-way apply for patch context mismatches
-        result = await manager.run(
-            ["git", "apply", "--3way", "--whitespace=nowarn", str(patch_path)],
-            cwd=target_dir,
-        )
-        if not result["success"]:
-            # If Claude applied edits directly, accept working tree changes
-            status = await manager.run(
-                ["git", "status", "--porcelain"],
-                cwd=target_dir,
-            )
-            if status["output"].strip():
-                logger.warning(
-                    "Claude diff failed to apply but working tree has changes; continuing"
-                )
-                return
-            raise AgentError(f"Failed to apply Claude diff: {result['output']}")
+        raise AgentError(f"Failed to apply Claude diff: {last['output'] if last else ''}")
 
     def _sanitize_diff(self, diff: str) -> str:
         """Normalize diff lines to reduce corruption from missing prefixes."""
