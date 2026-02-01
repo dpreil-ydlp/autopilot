@@ -1190,6 +1190,16 @@ class ExecutionLoop:
         allowed_paths = [p.strip() for p in (task.allowed_paths or []) if p.strip()]
         manager = SubprocessManager(timeout_sec=30)
 
+        # Autopilot generates per-task UAT artifacts under tests/uat/. These should be considered
+        # in-scope for the task even when the task's allowed_paths is restricted (e.g. src-only).
+        # Otherwise, runs fail at commit time with "Out-of-scope changes" despite the artifacts
+        # being produced by the orchestrator.
+        safe_task_id = task_id.replace("-", "_")
+        uat_artifacts = {
+            f"tests/uat/test_{safe_task_id}_uat.py",
+            f"tests/uat/{safe_task_id}_uat.md",
+        }
+
         # Housekeeping: remove known-noise paths from tracking and clean ignored files.
         await manager.run(["git", "rm", "-r", "--cached", "--ignore-unmatch", "logs"], cwd=workdir)
         await manager.run(["git", "clean", "-fdX"], cwd=workdir)
@@ -1206,6 +1216,8 @@ class ExecutionLoop:
             return payload
 
         def in_scope(path: str) -> bool:
+            if path in uat_artifacts:
+                return True
             if not allowed_paths:
                 return True
             for prefix in allowed_paths:
@@ -1387,6 +1399,10 @@ class ExecutionLoop:
                         task_id,
                         path,
                     )
+            # Also stage per-task UAT artifacts if they were generated.
+            for rel in sorted(uat_artifacts):
+                if (workdir / rel).exists():
+                    to_add.append(rel)
             add_cmd = ["git", "add", "--", *(to_add or allowed_paths)]
         else:
             logger.warning("Task %s has no allowed_paths; staging all changes", task_id)
