@@ -262,9 +262,10 @@ class ValidationRunner:
                 command_type == "tests"
                 and self.allow_no_tests
                 and result["exit_code"] == 5
-                and "no tests ran" in result["output"].lower()
             ):
-                logger.warning("No tests ran; treating as success")
+                # Pytest returns exit code 5 when no tests are collected. With `-q` this can
+                # produce no stdout, so key off the exit code (not output content).
+                logger.warning("No tests collected; treating as success")
                 result["success"] = True
                 result["exit_code"] = 0
 
