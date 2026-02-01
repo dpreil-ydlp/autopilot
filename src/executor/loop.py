@@ -384,13 +384,16 @@ class ExecutionLoop:
 
             # Review
             self.terminal.print_progress(f"Task {task_id}: Review")
-            review_success = await self._review_step(
+            review_success, review_feedback = await self._review_step(
                 task_id, task, validation_results, workdir=workdir
             )
             if not review_success:
                 self.terminal.print_progress(f"Task {task_id}: Updating (review changes)")
+                if review_feedback:
+                    last_validation_summary = f"## Review Feedback\n{review_feedback}\n"
                 # Feed into FIX loop
                 continue
+            last_validation_summary = ""
 
             # Generate UAT cases (if configured)
             self.terminal.print_progress(f"Task {task_id}: UAT generation")
@@ -711,7 +714,9 @@ class ExecutionLoop:
             if not result["success"]:
                 # If the configured default branch doesn't exist (common on fresh repos where
                 # Git still uses `master`), fall back to the current branch instead of failing.
-                if "pathspec" in (result["output"] or "") and default_branch in (result["output"] or ""):
+                if "pathspec" in (result["output"] or "") and default_branch in (
+                    result["output"] or ""
+                ):
                     logger.warning(
                         "Default branch %s not found; staying on %s for merge",
                         default_branch,
@@ -911,7 +916,7 @@ class ExecutionLoop:
 
     async def _review_step(
         self, task_id: str, task, validation_results: dict, workdir: Path | None = None
-    ) -> bool:
+    ) -> tuple[bool, str]:
         """Execute review step.
 
         Args:
@@ -921,7 +926,7 @@ class ExecutionLoop:
             workdir: Working directory (uses repo root if not specified)
 
         Returns:
-            True if review passed
+            (success, feedback). feedback is non-empty when changes are requested or an error occurred.
         """
         logger.info(f"Review step for {task_id}")
 
@@ -949,17 +954,16 @@ class ExecutionLoop:
 
             if not diff.strip() and not validation_output:
                 logger.info("No changes detected; skipping review")
-                return True
+                return True, ""
 
             # Skip review if emergency mode
             if self.safety.should_skip_review():
                 logger.warning("⚠️  Skipping review (EMERGENCY MODE)")
-                return True
+                return True, ""
 
             # Execute reviewer
             context = self._format_task_context(task, phase="Review")
             attempts = max(0, int(getattr(self.config.reviewer, "max_retries", 0))) + 1
-            last_error: Exception | None = None
             result = None
             for attempt in range(attempts):
                 try:
@@ -972,7 +976,6 @@ class ExecutionLoop:
                     )
                     break
                 except AgentError as e:
-                    last_error = e
                     if attempt < attempts - 1:
                         logger.warning(
                             "Review attempt %s/%s failed (%s); retrying",
@@ -987,16 +990,20 @@ class ExecutionLoop:
             verdict = result.get("verdict") if isinstance(result, dict) else None
             if verdict == "approve":
                 logger.info("Review approved")
-                return True
+                return True, ""
             elif verdict == "request_changes":
-                logger.warning(f"Review requested changes: {result.get('feedback', '')}")
-                return False
-            logger.error(f"Review returned invalid response: {result}")
-            return False
+                feedback = result.get("feedback", "") if isinstance(result, dict) else ""
+                logger.warning("Review requested changes: %s", feedback)
+                return False, feedback
+            logger.error("Review returned invalid response: %s", result)
+            return False, f"Invalid reviewer response: {result}"
 
         except AgentError as e:
             logger.error(f"Review error: {e}")
-            return False
+            return False, str(e)
+        except Exception as e:
+            logger.error(f"Review error: {e}")
+            return False, str(e)
 
     async def _generate_uat_step(self, task_id: str, task, workdir: Path | None = None) -> bool:
         """Generate UAT cases as executable Python pytest code.
@@ -1249,10 +1256,18 @@ class ExecutionLoop:
             f"tests/uat/test_{safe_task_id}_uat.py",
             f"tests/uat/{safe_task_id}_uat.md",
         }
+        uat_dirs = {str(Path(p).parent) for p in uat_artifacts}
+        uat_dirs |= {f"{d}/" for d in uat_dirs}
 
         # Housekeeping: remove known-noise paths from tracking and clean ignored files.
         await manager.run(["git", "rm", "-r", "--cached", "--ignore-unmatch", "logs"], cwd=workdir)
         await manager.run(["git", "clean", "-fdX"], cwd=workdir)
+
+        # Stage per-task UAT artifacts early so `git status` doesn't report `tests/uat/` as a
+        # single untracked directory (which would otherwise look out-of-scope).
+        for rel in sorted(uat_artifacts):
+            if (workdir / rel).exists():
+                await manager.run(["git", "add", "--", rel], cwd=workdir)
 
         status = await manager.run(["git", "status", "--porcelain"], cwd=workdir)
         if not status["success"]:
@@ -1267,6 +1282,8 @@ class ExecutionLoop:
 
         def in_scope(path: str) -> bool:
             if path in uat_artifacts:
+                return True
+            if path in uat_dirs and any((workdir / rel).exists() for rel in uat_artifacts):
                 return True
             if not allowed_paths:
                 return True

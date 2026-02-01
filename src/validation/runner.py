@@ -265,13 +265,14 @@ class ValidationRunner:
             )
 
             if (
-                command_type == "tests"
+                command_type in {"tests", "uat"}
                 and self.allow_no_tests
                 and result["exit_code"] == 5
             ):
                 # Pytest returns exit code 5 when no tests are collected. With `-q` this can
                 # produce no stdout, so key off the exit code (not output content).
-                logger.warning("No tests collected; treating as success")
+                label = "UAT tests" if command_type == "uat" else "tests"
+                logger.warning("No %s collected; treating as success", label)
                 result["success"] = True
                 result["exit_code"] = 0
 

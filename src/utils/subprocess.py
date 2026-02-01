@@ -160,7 +160,9 @@ class SubprocessManager:
 
                 resolved = None
                 if not os.path.isabs(command[0]):
-                    resolved = shutil.which(command[0], path=(retry_env or env or os.environ).get("PATH"))
+                    resolved = shutil.which(
+                        command[0], path=(retry_env or env or os.environ).get("PATH")
+                    )
                 if resolved:
                     command = [resolved, *command[1:]]
 
@@ -195,7 +197,7 @@ class SubprocessManager:
                     timed_out = False
                     stuck = False
                     exit_code = process.returncode
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     if self.stuck_no_output_sec:
                         time_since_output = (
                             datetime.now() - last_output_time["value"]
@@ -231,7 +233,7 @@ class SubprocessManager:
                     output = ""
                     timed_out = False
                     stuck = False
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     await self._terminate_process(process)
                     timed_out = True
                     output = ""

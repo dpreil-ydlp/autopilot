@@ -98,7 +98,8 @@ lint: ruff check .
 
 Notes:
 - If a task omits **Validation Commands**, Autopilot will use the defaults from `.autopilot/config.yml`.
-- Pytest "no tests ran" can be treated as success via `loop.allow_no_tests`.
+- Pytest exit code 5 ("no tests collected") can be treated as success for both `tests` and `uat` via
+  `loop.allow_no_tests`.
  - If a task omits **UAT** in Validation Commands, Autopilot will use the default `commands.uat` from `.autopilot/config.yml`.
  - Plan/review runs use an isolated Codex profile (no MCP servers) and may override the Codex model; see config below.
 
@@ -297,6 +298,7 @@ Plan runs also persist debugging artifacts:
 - Diff line count caps
 - TODO/FIXME detection
 - Network tool prohibition (optional)
+- Per-task UAT artifacts under `tests/uat/` are treated as in-scope even when task `allowed_paths` are narrower.
 - Common doc artifact auto-fix: root-level `*.md` created out-of-scope is moved into the first allowed
   directory when possible, otherwise backed up under `.autopilot/artifacts/out-of-scope/`
 
@@ -372,6 +374,7 @@ TASK_INIT → BUILD → VALIDATE → REVIEW
 - **Planner failure**: retry 1x → FAILED
 - **Builder failure**: retry 1x → FAILED
 - **Reviewer failure**: retry 1x → FAILED
+- **Reviewer requests changes**: feed review feedback into the next BUILD iteration
 - **Push failure**: retry 2x → FAILED with patch artifact
 - **Validation failure**: feed into FIX loop (no retry)
 
