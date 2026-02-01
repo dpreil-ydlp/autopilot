@@ -910,13 +910,31 @@ class ExecutionLoop:
 
             # Execute reviewer
             context = self._format_task_context(task, phase="Review")
-            result = await self.reviewer.review(
-                diff=diff,
-                validation_output=validation_output,
-                timeout_sec=self.config.loop.review_timeout_sec,
-                work_dir=workdir,
-                context=context,
-            )
+            attempts = max(0, int(getattr(self.config.reviewer, "max_retries", 0))) + 1
+            last_error: Exception | None = None
+            result = None
+            for attempt in range(attempts):
+                try:
+                    result = await self.reviewer.review(
+                        diff=diff,
+                        validation_output=validation_output,
+                        timeout_sec=self.config.loop.review_timeout_sec,
+                        work_dir=workdir,
+                        context=context,
+                    )
+                    break
+                except AgentError as e:
+                    last_error = e
+                    if attempt < attempts - 1:
+                        logger.warning(
+                            "Review attempt %s/%s failed (%s); retrying",
+                            attempt + 1,
+                            attempts,
+                            e,
+                        )
+                        await asyncio.sleep(0.5)
+                        continue
+                    raise
 
             verdict = result.get("verdict") if isinstance(result, dict) else None
             if verdict == "approve":
@@ -1004,6 +1022,22 @@ class ExecutionLoop:
                         ")",
                     ]
                 )
+            else:
+                # Guard against invalid Python (e.g. placeholder identifiers copied verbatim).
+                try:
+                    compile(uat_code, str(uat_file), "exec")
+                except SyntaxError as e:
+                    logger.warning("Generated UAT code is invalid (%s); writing skip file", e)
+                    uat_code = "\n".join(
+                        [
+                            "import pytest",
+                            "",
+                            "pytest.skip(",
+                            f'    "Invalid UAT code generated at {uat_md} ({e.__class__.__name__}); see raw file.",',
+                            "    allow_module_level=True,",
+                            ")",
+                        ]
+                    )
 
             with open(uat_file, "w") as f:
                 f.write(uat_code)

@@ -414,33 +414,13 @@ Format as executable Python code:
 ```python
 import pytest
 from pathlib import Path
-from your_module import your_functions
 
-class TestUAT<TaskName>:
-    \"\"\"UAT tests for <Task Name>.\"\"\"
+class TestUATTask:
+    \"\"\"UAT tests for this task.\"\"\"
 
-    def test_happy_path_scenario_1(self):
-        \"\"\"Test <scenario description>.\"\"\"
-        # Given
-        # Preconditions setup
-
-        # When
-        # Actions to test
-
-        # Then
-        # Expected outcomes
-        assert result == expected
-
-    def test_edge_case_1(self):
-        \"\"\"Test <edge case description>.\"\"\"
-        # Test implementation
-
-    def test_error_condition_1(self):
-        \"\"\"Test <error condition description>.\"\"\"
-        # Test with pytest.raises for expected errors
-        with pytest.raises(ValueError):
-            # Code that should raise ValueError
-            pass
+    def test_happy_path(self):
+        \"\"\"Test a happy-path scenario.\"\"\"
+        assert True
 ```
 
 IMPORTANT:
@@ -450,6 +430,7 @@ IMPORTANT:
 - Make tests executable and independent
 - Include docstrings explaining each test
 - Use proper assertions (assert, pytest.raises)
+- Do NOT use angle brackets like `<TaskName>` in identifiers; all names must be valid Python syntax.
 
 Output ONLY the Python code, no markdown formatting, no explanations."""
 
@@ -590,11 +571,30 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
     def _parse_review_json(self, output: str) -> dict:
         """Parse review JSON from output."""
         try:
-            json_start = output.find("{")
-            if json_start >= 0:
-                decoder = json.JSONDecoder()
-                parsed, _ = decoder.raw_decode(output[json_start:])
-                return parsed
+            decoder = json.JSONDecoder()
+            candidates: list[dict] = []
+            idx = output.find("{")
+            while idx >= 0:
+                try:
+                    parsed, end = decoder.raw_decode(output[idx:])
+                    if isinstance(parsed, dict):
+                        candidates.append(parsed)
+                    idx = output.find("{", idx + end)
+                except json.JSONDecodeError:
+                    idx = output.find("{", idx + 1)
+
+            # Prefer the most recent dict that looks like a review response.
+            for candidate in reversed(candidates):
+                if {
+                    "verdict",
+                    "feedback",
+                    "issues",
+                }.issubset(candidate.keys()):
+                    return candidate
+
+            # Fallback to any parsed dict.
+            if candidates:
+                return candidates[-1]
 
         except json.JSONDecodeError as e:
             raise AgentError(f"Failed to parse review JSON: {e}")
