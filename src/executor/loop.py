@@ -884,21 +884,63 @@ class ExecutionLoop:
         )
 
         try:
-
-            def pick(name: str, default: str | None) -> str | None:
+            def pick(name: str, default: str | None) -> tuple[str | None, bool]:
                 override = task.validation_commands.get(name)
                 if override is None or override == "":
-                    return default
-                return override
+                    return default, False
+                return override, True
+
+            format_cmd, format_override = pick("format", self.config.commands.format)
+            lint_cmd, lint_override = pick("lint", self.config.commands.lint)
+            tests_cmd, tests_override = pick("tests", self.config.commands.tests)
+            uat_cmd, uat_override = pick("uat", self.config.commands.uat)
+
+            defaults = {
+                "format": self.config.commands.format,
+                "lint": self.config.commands.lint,
+                "tests": self.config.commands.tests,
+                "uat": self.config.commands.uat,
+            }
+            used_override = {
+                "format": format_override,
+                "lint": lint_override,
+                "tests": tests_override,
+                "uat": uat_override,
+            }
 
             effective_commands = {
-                "format": pick("format", self.config.commands.format),
-                "lint": pick("lint", self.config.commands.lint),
-                "tests": pick("tests", self.config.commands.tests),
-                "uat": pick("uat", self.config.commands.uat),
+                "format": format_cmd,
+                "lint": lint_cmd,
+                "tests": tests_cmd,
+                "uat": uat_cmd,
             }
 
             results = await runner.run_all(commands=effective_commands)
+
+            # Plans can include per-task validation overrides (e.g. `pytest tests/unit/test_x.py`).
+            # If an override is invalid in the current repo (common when the planner guesses a
+            # filename), fall back to the repo-level configured command so the run can proceed.
+            tests_result = results.get("tests")
+            if (
+                tests_result
+                and not tests_result.success
+                and used_override.get("tests")
+                and defaults.get("tests")
+                and defaults["tests"] != effective_commands.get("tests")
+                and self._should_retry_validation_with_default(tests_result)
+            ):
+                logger.warning(
+                    "Task %s tests override failed (%s); retrying default tests command",
+                    task_id,
+                    tests_result.exit_code,
+                )
+                fallback = await runner.run_tests(defaults["tests"])
+                if fallback.success:
+                    logger.warning(
+                        "Default tests command succeeded; ignoring failing override for task %s",
+                        task_id,
+                    )
+                    results["tests"] = fallback
 
             # Check if all passed
             all_passed = all(r.success for r in results.values())
@@ -913,6 +955,24 @@ class ExecutionLoop:
         except Exception as e:
             logger.error(f"Validation error: {e}")
             return False, {}, str(e)
+
+    @staticmethod
+    def _should_retry_validation_with_default(result) -> bool:
+        """Heuristic: detect likely invalid per-task validation overrides.
+
+        This is intentionally conservative; we only retry when the failure looks like
+        "you asked pytest to run a file that doesn't exist" or "command not found".
+        """
+        output = (getattr(result, "output", "") or "").lower()
+        exit_code = getattr(result, "exit_code", None)
+
+        if exit_code in {2, 4} and "file or directory not found" in output:
+            return True
+        if exit_code == 127 and "command not found" in output:
+            return True
+        if exit_code is None and ("no such file or directory" in output or "command not found" in output):
+            return True
+        return False
 
     async def _review_step(
         self, task_id: str, task, validation_results: dict, workdir: Path | None = None
