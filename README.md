@@ -98,8 +98,8 @@ lint: ruff check .
 
 Notes:
 - If a task omits **Validation Commands**, Autopilot will use the defaults from `.autopilot/config.yml`.
-- If a task includes **Validation Commands** but the `tests` override looks invalid for the repo (e.g. `pytest tests/unit/test_x.py`
-  where the file doesn't exist), Autopilot will fall back to the default `commands.tests` from `.autopilot/config.yml`.
+- If a task includes **Validation Commands** and the `tests` override fails, Autopilot will retry using the default
+  `commands.tests` from `.autopilot/config.yml`.
 - Pytest exit code 5 ("no tests collected") can be treated as success for both `tests` and `uat` via
   `loop.allow_no_tests`.
 - If a task omits **UAT** in Validation Commands, Autopilot will use the default `commands.uat` from `.autopilot/config.yml`.

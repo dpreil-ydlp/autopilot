@@ -929,7 +929,6 @@ class ExecutionLoop:
                 and used_override.get("tests")
                 and defaults.get("tests")
                 and defaults["tests"] != effective_commands.get("tests")
-                and self._should_retry_validation_with_default(tests_result)
             ):
                 logger.warning(
                     "Task %s tests override failed (%s); retrying default tests command",
@@ -957,24 +956,6 @@ class ExecutionLoop:
         except Exception as e:
             logger.error(f"Validation error: {e}")
             return False, {}, str(e)
-
-    @staticmethod
-    def _should_retry_validation_with_default(result) -> bool:
-        """Heuristic: detect likely invalid per-task validation overrides.
-
-        This is intentionally conservative; we only retry when the failure looks like
-        "you asked pytest to run a file that doesn't exist" or "command not found".
-        """
-        output = (getattr(result, "output", "") or "").lower()
-        exit_code = getattr(result, "exit_code", None)
-
-        if exit_code in {2, 4} and "file or directory not found" in output:
-            return True
-        if exit_code == 127 and "command not found" in output:
-            return True
-        if exit_code is None and ("no such file or directory" in output or "command not found" in output):
-            return True
-        return False
 
     async def _review_step(
         self, task_id: str, task, validation_results: dict, workdir: Path | None = None
