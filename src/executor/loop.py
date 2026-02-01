@@ -36,6 +36,7 @@ class ExecutionLoop:
         self,
         config: AutopilotConfig,
         state_path: Path | None = None,
+        resume: bool = False,
         verbose: bool = False,
     ):
         """Initialize execution loop.
@@ -43,6 +44,7 @@ class ExecutionLoop:
         Args:
             config: Autopilot configuration
             state_path: Path to state file
+            resume: Whether to resume an existing run from state.json
             verbose: Enable verbose output
         """
         self.config = config
@@ -52,7 +54,7 @@ class ExecutionLoop:
 
         # State management
         state_path = state_path or Path(".autopilot/state.json")
-        self.machine = OrchestratorMachine(state_path)
+        self.machine = OrchestratorMachine(state_path, resume=resume)
         self.terminal = TerminalDashboard(verbose=verbose)
         self.dashboard = StatusDashboard(self.machine.state)
 

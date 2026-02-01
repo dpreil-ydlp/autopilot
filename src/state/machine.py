@@ -1,6 +1,8 @@
 """Orchestrator state machine implementation."""
 
 import logging
+import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .persistence import (
@@ -73,25 +75,39 @@ class OrchestratorMachine:
         ],
     }
 
-    def __init__(self, state_path: Path):
+    def __init__(self, state_path: Path, resume: bool = False):
         """Initialize state machine.
 
         Args:
             state_path: Path to state file
+            resume: If True, load existing state when present; otherwise start a new run.
         """
         self.state_path = state_path
+        self.resume = resume
         self.state = self._load_or_create()
 
     def _load_or_create(self) -> OrchestratorStateModel:
         """Load existing state or create new one."""
         existing = None
-        if self.state_path.exists():
+        if self.resume and self.state_path.exists():
             from .persistence import load_state
 
             existing = load_state(self.state_path)
             if existing:
                 logger.info(f"Resuming run {existing.run_id} in state {existing.state}")
                 return existing
+        elif self.state_path.exists():
+            # Starting a fresh run: archive the previous state file for debugging.
+            try:
+                timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+                backup_dir = self.state_path.parent / "state-history"
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                backup_path = backup_dir / f"state_{timestamp}.json"
+                shutil.copy2(self.state_path, backup_path)
+                logger.info("Archived previous state to %s", backup_path)
+            except Exception:
+                # Best-effort only; never block a new run on backup failures.
+                pass
 
         # Create new state
         from .persistence import generate_run_id

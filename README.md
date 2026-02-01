@@ -104,6 +104,8 @@ Notes:
   `loop.allow_no_tests`.
 - If a task omits **UAT** in Validation Commands, Autopilot will use the default `commands.uat` from `.autopilot/config.yml`.
 - Plan/review runs use an isolated Codex profile (no MCP servers) and may override the Codex model; see config below.
+- `autopilot run` starts a fresh run even if `.autopilot/state.json` exists (previous state is archived under
+  `.autopilot/state-history/`). Use `autopilot resume` to continue an interrupted run.
 
 ### 2. Run Autopilot
 

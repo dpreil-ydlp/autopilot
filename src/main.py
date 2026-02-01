@@ -244,6 +244,7 @@ async def _run_async(
     """
     loop = ExecutionLoop(
         config=config,
+        resume=resume,
         verbose=verbose,
     )
 
@@ -384,7 +385,7 @@ async def _resume_async(config, task: Path | None, max_workers: int, verbose: bo
     Returns:
         True if resume succeeded
     """
-    loop = ExecutionLoop(config=config, verbose=verbose)
+    loop = ExecutionLoop(config=config, verbose=verbose, resume=True)
 
     # Try to resume from state (will auto-detect task if task not provided)
     return await loop.resume(task_path=task)
