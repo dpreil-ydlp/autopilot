@@ -1376,12 +1376,94 @@ class ExecutionLoop:
                         violation_codes[path] = code
 
             if violations:
-                logger.error(
-                    "Out-of-scope changes for %s: %s",
-                    task_id,
-                    ", ".join(sorted(set(violations))),
+                # As a final fallback, keep task scope strict by removing/reverting out-of-scope
+                # changes instead of failing the entire run. Preserve a copy under
+                # .autopilot/artifacts/out-of-scope for debugging.
+                timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+                backup_root = (
+                    workdir / ".autopilot" / "artifacts" / "out-of-scope" / task_id / timestamp
                 )
-                return False
+                try:
+                    backup_root.mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    pass
+
+                for path in sorted(set(violations)):
+                    src = workdir / path
+                    code = violation_codes.get(path) or ""
+
+                    # Untracked files/dirs: move aside.
+                    if code == "??":
+                        if src.exists():
+                            dst = backup_root / path
+                            dst.parent.mkdir(parents=True, exist_ok=True)
+                            try:
+                                shutil.move(str(src), str(dst))
+                                logger.warning(
+                                    "Moved out-of-scope untracked path for %s: %s -> %s",
+                                    task_id,
+                                    path,
+                                    dst,
+                                )
+                            except Exception as e:
+                                logger.error(
+                                    "Failed to move out-of-scope path for %s (%s): %s",
+                                    task_id,
+                                    path,
+                                    e,
+                                )
+                        continue
+
+                    # Tracked modifications: back up current content (best-effort), then restore.
+                    if src.exists() and src.is_file():
+                        dst = backup_root / path
+                        try:
+                            dst.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(str(src), str(dst))
+                        except Exception:
+                            pass
+
+                    restore_res = await manager.run(
+                        ["git", "restore", "--staged", "--worktree", "--", path],
+                        cwd=workdir,
+                    )
+                    if not restore_res["success"]:
+                        # Older git versions may not support restore in some cases; fall back.
+                        await manager.run(["git", "checkout", "--", path], cwd=workdir)
+
+                    logger.warning(
+                        "Reverted out-of-scope tracked path for %s: %s (backup: %s)",
+                        task_id,
+                        path,
+                        backup_root / path,
+                    )
+
+                # Re-check status after cleanup.
+                status = await manager.run(["git", "status", "--porcelain"], cwd=workdir)
+                if not status["success"]:
+                    logger.error(
+                        "Failed to get git status after cleaning out-of-scope paths: %s",
+                        status["output"],
+                    )
+                    return False
+
+                violations = []
+                for line in status["output"].splitlines():
+                    if not line.strip():
+                        continue
+                    path = extract_path(line)
+                    if not path or is_noise(path):
+                        continue
+                    if not in_scope(path):
+                        violations.append(path)
+
+                if violations:
+                    logger.error(
+                        "Out-of-scope changes for %s (after cleanup): %s",
+                        task_id,
+                        ", ".join(sorted(set(violations))),
+                    )
+                    return False
 
         # Stage only in-scope paths (plus any already-staged housekeeping changes).
         if allowed_paths:
