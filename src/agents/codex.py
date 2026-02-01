@@ -180,6 +180,49 @@ class CodexAgent(BaseAgent):
         def _looks_like_diff(text: str) -> bool:
             return "diff --git" in text or ("\n--- " in f"\n{text}" and "\n+++ " in f"\n{text}")
 
+        def _looks_like_stray_commentary(line: str) -> bool:
+            s = line.strip()
+            if not s:
+                return False
+
+            for prefix in (
+                "#",
+                "import ",
+                "from ",
+                "def ",
+                "class ",
+                "return ",
+                "if ",
+                "elif ",
+                "else",
+                "for ",
+                "while ",
+                "with ",
+                "try",
+                "except",
+                "raise",
+                "assert",
+            ):
+                if s.startswith(prefix):
+                    return False
+
+            if s.startswith(
+                (
+                    "Let me",
+                    "I'll",
+                    "I need",
+                    "I will",
+                    "Now ",
+                    "Based on",
+                )
+            ):
+                return True
+
+            if s[0].isupper() and " " in s and s.endswith((".", ":", "!", "?")):
+                return True
+
+            return False
+
         # Prefer fenced diff blocks if present.
         if "```" in output:
             sections = output.split("```")
@@ -191,19 +234,69 @@ class CodexAgent(BaseAgent):
             if diff_blocks:
                 return diff_blocks[-1]
 
-        # Fallback: find first diff-like line in raw output.
+        # Fallback: extract from first diff-like line and filter stray commentary.
         lines = output.splitlines()
-        last_idx = None
+        start_idx = None
         for idx, line in enumerate(lines):
             if line.startswith("diff --git"):
-                last_idx = idx
+                start_idx = idx
+                break
             if line.startswith("--- "):
                 if idx + 1 < len(lines) and lines[idx + 1].startswith("+++ "):
-                    last_idx = idx
+                    start_idx = idx
+                    break
 
-        if last_idx is not None:
-            return "\n".join(lines[last_idx:]).strip()
-        return ""
+        if start_idx is None:
+            return ""
+
+        allowed_meta_prefixes = (
+            "index ",
+            "new file mode",
+            "deleted file mode",
+            "similarity index",
+            "rename from",
+            "rename to",
+            "old mode",
+            "new mode",
+            "Binary files",
+            "GIT binary patch",
+        )
+
+        keep: list[str] = []
+        in_hunk = False
+        for line in lines[start_idx:]:
+            if line.startswith("diff --git"):
+                in_hunk = False
+                keep.append(line)
+                continue
+            if line.startswith(allowed_meta_prefixes):
+                keep.append(line)
+                continue
+            if line.startswith(("--- ", "+++ ")):
+                keep.append(line)
+                continue
+            if line.startswith("@@"):
+                in_hunk = True
+                keep.append(line)
+                continue
+            if line.startswith("\\ No newline"):
+                keep.append(line)
+                continue
+
+            if in_hunk:
+                if line.startswith(("+", "-", " ")):
+                    keep.append(line)
+                    continue
+                if line == "":
+                    keep.append("+")
+                    continue
+                if _looks_like_stray_commentary(line):
+                    continue
+                keep.append(f"+{line}")
+            else:
+                continue
+
+        return "\n".join(keep).strip()
 
     async def _apply_diff(self, diff: str, work_dir: Path | None) -> None:
         """Apply diff with git apply in working directory."""

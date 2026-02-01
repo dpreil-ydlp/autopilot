@@ -261,6 +261,53 @@ class ClaudeAgent(BaseAgent):
         def _looks_like_diff(text: str) -> bool:
             return "diff --git" in text or ("\n--- " in f"\n{text}" and "\n+++ " in f"\n{text}")
 
+        def _looks_like_stray_commentary(line: str) -> bool:
+            """Best-effort filter for model commentary accidentally emitted inside a diff."""
+            s = line.strip()
+            if not s:
+                return False
+
+            # Keep common code-ish prefixes (even if the leading diff +/- is missing).
+            for prefix in (
+                "#",
+                "import ",
+                "from ",
+                "def ",
+                "class ",
+                "return ",
+                "if ",
+                "elif ",
+                "else",
+                "for ",
+                "while ",
+                "with ",
+                "try",
+                "except",
+                "raise",
+                "assert",
+            ):
+                if s.startswith(prefix):
+                    return False
+
+            # Common English sentences produced by the model; better to drop than inject into code.
+            if s.startswith(
+                (
+                    "Let me",
+                    "I'll",
+                    "I need",
+                    "I will",
+                    "Now ",
+                    "Based on",
+                )
+            ):
+                return True
+
+            # Heuristic: sentence-like capitalization + spaces + punctuation.
+            if s[0].isupper() and " " in s and s.endswith((".", ":", "!", "?")):
+                return True
+
+            return False
+
         # Prefer fenced diff blocks if present
         if "```" in output:
             sections = output.split("```")
@@ -272,21 +319,72 @@ class ClaudeAgent(BaseAgent):
             if diff_blocks:
                 return diff_blocks[-1]
 
-        # Fallback: find first diff-like line in raw output
+        # Fallback: extract from first diff-like line and filter out stray commentary.
         lines = output.splitlines()
-        last_idx = None
+        start_idx = None
         for idx, line in enumerate(lines):
             if line.startswith("diff --git"):
-                last_idx = idx
+                start_idx = idx
+                break
             if line.startswith("--- "):
-                # ensure next line is +++
                 if idx + 1 < len(lines) and lines[idx + 1].startswith("+++ "):
-                    last_idx = idx
+                    start_idx = idx
+                    break
 
-        if last_idx is not None:
-            return "\n".join(lines[last_idx:]).strip()
+        if start_idx is None:
+            return ""
 
-        return ""
+        allowed_meta_prefixes = (
+            "index ",
+            "new file mode",
+            "deleted file mode",
+            "similarity index",
+            "rename from",
+            "rename to",
+            "old mode",
+            "new mode",
+            "Binary files",
+            "GIT binary patch",
+        )
+
+        keep: list[str] = []
+        in_hunk = False
+        for line in lines[start_idx:]:
+            if line.startswith("diff --git"):
+                in_hunk = False
+                keep.append(line)
+                continue
+            if line.startswith(allowed_meta_prefixes):
+                keep.append(line)
+                continue
+            if line.startswith(("--- ", "+++ ")):
+                keep.append(line)
+                continue
+            if line.startswith("@@"):
+                in_hunk = True
+                keep.append(line)
+                continue
+            if line.startswith("\\ No newline"):
+                keep.append(line)
+                continue
+
+            if in_hunk:
+                if line.startswith(("+", "-", " ")):
+                    keep.append(line)
+                    continue
+                if line == "":
+                    # A blank line must still carry a diff prefix; treat as adding a blank line.
+                    keep.append("+")
+                    continue
+                if _looks_like_stray_commentary(line):
+                    continue
+                # Assume a missing prefix; treat as an addition to keep the patch parseable.
+                keep.append(f"+{line}")
+            else:
+                # Skip any stray non-diff lines between diff blocks.
+                continue
+
+        return "\n".join(keep).strip()
 
     def _resolve_streamed_text(self, output: str, stream_state: dict) -> str:
         """Resolve streamed JSON output into plain text."""
