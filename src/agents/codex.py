@@ -55,12 +55,12 @@ class CodexAgent(BaseAgent):
         - a unified git diff (preferred), or
         - the literal marker: NO_CHANGES
         """
-        wrapped_prompt = self._wrap_build_prompt(prompt)
         retries = 0
         last_error: Exception | None = None
 
         while retries <= self.max_retries:
             try:
+                wrapped_prompt = self._wrap_build_prompt(prompt)
                 if self.mode == "codex_cli":
                     manager = SubprocessManager(timeout_sec=timeout_sec)
                     result = await manager.run(
@@ -86,7 +86,40 @@ class CodexAgent(BaseAgent):
 
                 diff = self._extract_diff(output_text)
                 if diff:
-                    await self._apply_diff(diff, work_dir)
+                    try:
+                        await self._apply_diff(diff, work_dir)
+                    except AgentError as e:
+                        # Some codex invocations may have edited files directly (rare). If so,
+                        # accept those changes rather than failing on an apply error.
+                        status_mgr = SubprocessManager(timeout_sec=30)
+                        try:
+                            status = await status_mgr.run(
+                                ["git", "status", "--porcelain"],
+                                cwd=work_dir,
+                            )
+                            if status.get("output", "").strip():
+                                logger.warning(
+                                    "Codex diff failed to apply but working tree has changes; continuing"
+                                )
+                                return {**result, "success": True, "summary": None}
+                        except Exception:
+                            pass
+
+                        # Retry with feedback so the model re-diffs against current state.
+                        last_error = e
+                        if retries < self.max_retries:
+                            retries += 1
+                            prompt = "\n\n".join(
+                                [
+                                    prompt,
+                                    "## Patch Apply Failure",
+                                    "The previous diff failed to apply. Please regenerate a unified diff",
+                                    "against the CURRENT repository state. Ensure hunks match existing files.",
+                                    f"Error:\n{e}",
+                                ]
+                            )
+                            continue
+                        raise
                 elif "NO_CHANGES" not in output_text:
                     raise AgentError(
                         "Build output did not include a unified diff or NO_CHANGES marker."
