@@ -956,6 +956,44 @@ class ExecutionLoop:
                 logger.info("No changes detected; skipping review")
                 return True, ""
 
+            # Reviewers only see the diff hunks, which can omit important file-level context
+            # (e.g. existing imports). Provide a small, deterministic snippet of each changed
+            # file header to reduce false positives and improve review quality.
+            try:
+                name_cmd = ["git", "diff", "--name-only"]
+                if allowed_paths:
+                    name_cmd.extend(["--", *allowed_paths])
+                name_res = await manager.run(name_cmd, cwd=workdir)
+                changed_files = [
+                    line.strip()
+                    for line in (name_res.get("output") or "").splitlines()
+                    if line.strip()
+                ]
+                snippet_lines = []
+                remaining = 4000  # cap extra context size
+                for rel in changed_files[:10]:
+                    p = workdir / rel
+                    if not p.is_file():
+                        continue
+                    try:
+                        head = p.read_text(errors="replace").splitlines()[:80]
+                    except Exception:
+                        continue
+                    block = "\n".join(head).rstrip() + "\n"
+                    header = f"--- {rel} (first 80 lines)\n"
+                    piece = header + block + "\n"
+                    if remaining <= 0:
+                        break
+                    if len(piece) > remaining:
+                        piece = piece[:remaining]
+                    snippet_lines.append(piece)
+                    remaining -= len(piece)
+                if snippet_lines:
+                    diff = f"{diff}\n\n## File Context\n" + "".join(snippet_lines)
+            except Exception:
+                # Review context is a best-effort enhancement; never fail the run for it.
+                pass
+
             # Skip review if emergency mode
             if self.safety.should_skip_review():
                 logger.warning("⚠️  Skipping review (EMERGENCY MODE)")
