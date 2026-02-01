@@ -461,6 +461,53 @@ class ExecutionLoop:
             lines.extend([f"- {item}" for item in task.acceptance_criteria])
         return "\n".join(lines)
 
+    async def _ensure_worktree_gitdir(self, workdir: Path) -> None:
+        """Repair accidental nested git repos inside Autopilot worktrees.
+
+        Models can sometimes run `git init` inside a worktree, replacing the worktree's `.git`
+        file (a pointer) with a `.git/` directory. That breaks later `git` commands because they
+        target the nested repo instead of the real worktree gitdir.
+        """
+        if workdir == self.config.repo.root:
+            return
+
+        git_marker = workdir / ".git"
+        if not git_marker.exists() or not git_marker.is_dir():
+            return
+
+        worktrees_dir = self.config.repo.root / ".git" / "worktrees"
+        expected_gitdir: Path | None = None
+
+        if worktrees_dir.exists():
+            target = str(git_marker)
+            for entry in worktrees_dir.iterdir():
+                try:
+                    gitdir_file = entry / "gitdir"
+                    if gitdir_file.is_file() and gitdir_file.read_text().strip() == target:
+                        expected_gitdir = entry
+                        break
+                except Exception:
+                    continue
+
+        if expected_gitdir is None:
+            candidate = worktrees_dir / workdir.name
+            if candidate.exists():
+                expected_gitdir = candidate
+
+        if expected_gitdir is None:
+            raise Exception(f"Worktree gitdir not found for {workdir}")
+
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        backup = workdir / ".autopilot" / "artifacts" / "corrupted-git" / timestamp / "git"
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.move(str(git_marker), str(backup))
+        except Exception:
+            shutil.rmtree(git_marker, ignore_errors=True)
+
+        git_marker.write_text(f"gitdir: {expected_gitdir}\n", encoding="utf-8")
+        logger.warning("Repaired nested .git repo in worktree %s (backup: %s)", workdir, backup)
+
     async def _get_merge_conflicts(self, repo_root: Path) -> list[str]:
         """Return list of merge conflict paths."""
         manager = SubprocessManager(timeout_sec=30)
@@ -879,6 +926,7 @@ class ExecutionLoop:
         logger.info(f"Review step for {task_id}")
 
         workdir = workdir or self.config.repo.root
+        await self._ensure_worktree_gitdir(workdir)
 
         try:
             allowed_paths = [p.strip() for p in (task.allowed_paths or []) if p.strip()]
@@ -964,6 +1012,7 @@ class ExecutionLoop:
         logger.info(f"UAT generation for {task_id}")
 
         workdir = workdir or self.config.repo.root
+        await self._ensure_worktree_gitdir(workdir)
 
         # Check if UAT command exists (task override or repo default)
         uat_command = task.validation_commands.get("uat")
@@ -1186,6 +1235,7 @@ class ExecutionLoop:
         logger.info(f"Commit step for {task_id}")
 
         workdir = workdir or self.config.repo.root
+        await self._ensure_worktree_gitdir(workdir)
 
         allowed_paths = [p.strip() for p in (task.allowed_paths or []) if p.strip()]
         manager = SubprocessManager(timeout_sec=30)
