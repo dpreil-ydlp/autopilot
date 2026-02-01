@@ -970,17 +970,29 @@ class ExecutionLoop:
                     if line.strip()
                 ]
                 snippet_lines = []
-                remaining = 4000  # cap extra context size
+                remaining = 12000  # cap extra context size
+                head_lines = 160
+                tail_lines = 160
                 for rel in changed_files[:10]:
                     p = workdir / rel
                     if not p.is_file():
                         continue
                     try:
-                        head = p.read_text(errors="replace").splitlines()[:80]
+                        lines = p.read_text(errors="replace").splitlines()
                     except Exception:
                         continue
-                    block = "\n".join(head).rstrip() + "\n"
-                    header = f"--- {rel} (first 80 lines)\n"
+
+                    excerpt: list[str] = []
+                    excerpt.extend(lines[:head_lines])
+                    if len(lines) > head_lines + tail_lines:
+                        excerpt.extend(["", "... (snip) ...", ""])
+                        excerpt.extend(lines[-tail_lines:])
+                        header = f"--- {rel} (head {head_lines} + tail {tail_lines} lines)\n"
+                    else:
+                        excerpt.extend(lines[head_lines:])
+                        header = f"--- {rel} (full file)\n"
+
+                    block = "\n".join(excerpt).rstrip() + "\n"
                     piece = header + block + "\n"
                     if remaining <= 0:
                         break
