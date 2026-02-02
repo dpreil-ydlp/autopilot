@@ -625,7 +625,9 @@ class TestUATTask:
                             logger.info(f"Result text preview (first 300 chars): {result_text[:300]}")
                             # Try to parse the result text as JSON directly
                             try:
-                                parsed = json.loads(result_text)
+                                # Try to fix malformed JSON first (trailing commas, etc.)
+                                fixed_text = self._fix_malformed_json(result_text)
+                                parsed = json.loads(fixed_text if fixed_text else result_text)
                                 if isinstance(parsed, dict) and ("tasks" in parsed or "edges" in parsed):
                                     logger.info(f"Successfully parsed result JSON with {len(parsed.get('tasks', []))} tasks")
                                     return parsed
@@ -644,7 +646,10 @@ class TestUATTask:
                                         elif in_code_block:
                                             # End of code block - try to parse
                                             try:
-                                                parsed = json.loads("\n".join(code_content))
+                                                # Try to fix malformed JSON first (trailing commas, etc.)
+                                                code_text = "\n".join(code_content)
+                                                fixed_text = self._fix_malformed_json(code_text)
+                                                parsed = json.loads(fixed_text if fixed_text else code_text)
                                                 if isinstance(parsed, dict) and ("tasks" in parsed or "edges" in parsed):
                                                     logger.info(f"Successfully parsed code block JSON with {len(parsed.get('tasks', []))} tasks")
                                                     return parsed
@@ -696,7 +701,9 @@ class TestUATTask:
 
         # Try to parse as complete JSON first (for non-streaming format)
         try:
-            parsed = json.loads(text_output.strip())
+            # Try to fix malformed JSON first (trailing commas, etc.)
+            fixed_text = self._fix_malformed_json(text_output.strip())
+            parsed = json.loads(fixed_text if fixed_text else text_output.strip())
             logger.info(f"Parsed JSON, keys: {list(parsed.keys()) if isinstance(parsed, dict) else type(parsed)}")
             if isinstance(parsed, dict) and "tasks" in parsed:
                 logger.info(f"Successfully parsed JSON with {len(parsed['tasks'])} tasks")
@@ -720,7 +727,9 @@ class TestUATTask:
                         in_code_block = False
                         json_text = "\n".join(code_block_content)
                         try:
-                            parsed = json.loads(json_text)
+                            # Try to fix malformed JSON first (trailing commas, etc.)
+                            fixed_text = self._fix_malformed_json(json_text)
+                            parsed = json.loads(fixed_text if fixed_text else json_text)
                             logger.debug(f"Successfully parsed JSON from code block at line {i}")
                             return parsed
                         except json.JSONDecodeError as e:
@@ -744,7 +753,9 @@ class TestUATTask:
                         json_start = i
                         # Try to parse immediately as it might be a single-line JSON
                         try:
-                            parsed = json.loads(stripped)
+                            # Try to fix malformed JSON first (trailing commas, etc.)
+                            fixed_text = self._fix_malformed_json(stripped)
+                            parsed = json.loads(fixed_text if fixed_text else stripped)
                             # Only return if it looks like plan data (has tasks or result field)
                             if isinstance(parsed, dict) and ("tasks" in parsed or "result" in parsed or "edges" in parsed):
                                 logger.debug(f"Successfully parsed single-line JSON at line {i} with plan data")
@@ -759,7 +770,9 @@ class TestUATTask:
                         # Try parsing accumulated JSON
                         json_text = "\n".join(lines[json_start : i + 1])
                         try:
-                            parsed = json.loads(json_text)
+                            # Try to fix malformed JSON first (trailing commas, etc.)
+                            fixed_text = self._fix_malformed_json(json_text)
+                            parsed = json.loads(fixed_text if fixed_text else json_text)
                             logger.debug(f"Successfully parsed JSON from plain text at line {i}")
                             return parsed
                         except json.JSONDecodeError:
@@ -769,7 +782,9 @@ class TestUATTask:
             if json_start >= 0:
                 json_text = "\n".join(lines[json_start:])
                 try:
-                    parsed = json.loads(json_text)
+                    # Try to fix malformed JSON first (trailing commas, etc.)
+                    fixed_text = self._fix_malformed_json(json_text)
+                    parsed = json.loads(fixed_text if fixed_text else json_text)
                     logger.debug(f"Successfully parsed JSON from end of output")
                     return parsed
                 except json.JSONDecodeError as e:
