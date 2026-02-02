@@ -323,56 +323,83 @@ async def _expand_chunked_plan(
             with open(chunk_path) as f:
                 chunk_content = f.read()
 
-            # Expand this chunk
-            try:
-                chunk_context = f"Chunk {chunk_num}/{len(chunks)}: {chunk.id}\nPlan size: {len(chunk_content)} characters"
-                # Use longer timeout for chunked processing (600s instead of 300s)
-                chunk_timeout = planner_config.get("timeout_sec", 300)
-                chunk_timeout = max(chunk_timeout, 600)  # Ensure at least 10 minutes for chunks
-                # Don't pass work_dir to prevent Claude from accessing repo files during planning
-                chunk_result = await agent.plan(
-                    plan_content=chunk_content,
-                    timeout_sec=chunk_timeout,
-                    work_dir=None,  # Run in isolated context, not in repo directory
-                    context=chunk_context,
+            # Detect meta-content chunks (testing, documentation, etc.)
+            meta_content_patterns = [
+                "performance testing", "security testing", "documentation",
+                "supporting documents", "source files", "implementation summary",
+                "verification plan", "testing checklist", "known issues"
+            ]
+            chunk_lower = chunk_content.lower()
+            meta_content_score = sum(1 for pattern in meta_content_patterns if pattern in chunk_lower)
+
+            # If chunk is primarily meta-content (3+ patterns), skip expansion
+            if meta_content_score >= 3:
+                logger.info(
+                    f"Chunk {chunk_num}/{len(chunks)}: Detected meta-content "
+                    f"({meta_content_score} patterns), skipping DAG expansion"
                 )
+                # Write empty chunk result
+                chunk_tasks = []
+                raw_edges = []
 
-                # Extract tasks from this chunk
-                tasks_data = chunk_result.get("tasks", [])
-                raw_edges = chunk_result.get("edges", [])
-
-                # Persist chunk raw output for debugging
+                # Persist empty result for debugging
                 chunk_raw = output_dir / f".chunk_{chunk_num}_raw.json"
                 try:
                     with open(chunk_raw, "w") as f:
-                        json.dump(chunk_result, f, indent=2)
+                        json.dump({"tasks": [], "edges": [], "meta_content": True}, f, indent=2)
                 except Exception:
                     pass
+            else:
+                # Expand this chunk (implementation tasks)
+                try:
+                    chunk_context = f"Chunk {chunk_num}/{len(chunks)}: {chunk.id}\nPlan size: {len(chunk_content)} characters"
+                    # Use longer timeout for chunked processing (600s instead of 300s)
+                    chunk_timeout = planner_config.get("timeout_sec", 300)
+                    chunk_timeout = max(chunk_timeout, 600)  # Ensure at least 10 minutes for chunks
+                    # Don't pass work_dir to prevent Claude from accessing repo files during planning
+                    chunk_result = await agent.plan(
+                        plan_content=chunk_content,
+                        timeout_sec=chunk_timeout,
+                        work_dir=None,  # Run in isolated context, not in repo directory
+                        context=chunk_context,
+                    )
 
-                # Process tasks with ID offset
-                chunk_tasks = []
-                for task_idx, task_data in enumerate(tasks_data):
-                    if not isinstance(task_data, dict):
-                        logger.warning(
-                            f"Chunk {chunk_num}: Invalid task entry, skipping"
-                        )
-                        continue
+                    # Extract tasks from this chunk
+                    tasks_data = chunk_result.get("tasks", [])
+                    raw_edges = chunk_result.get("edges", [])
 
-                    # Track the original/local task ID from the planner
-                    local_task_id = task_data.get("id")
-                    if not local_task_id:
-                        # Generate local ID for this chunk (1-indexed)
-                        local_task_id = f"task-{task_idx + 1}"
-                        task_data["id"] = local_task_id
-
-                    # Extract the numeric part for remapping
+                    # Persist chunk raw output for debugging
+                    chunk_raw = output_dir / f".chunk_{chunk_num}_raw.json"
                     try:
-                        local_num = int(local_task_id.split("-")[1])
-                    except (ValueError, IndexError):
-                        local_num = task_idx + 1
+                        with open(chunk_raw, "w") as f:
+                            json.dump(chunk_result, f, indent=2)
+                    except Exception:
+                        pass
 
-                    # Generate global task ID based on offset
-                    global_task_id = f"task-{task_id_offset + local_num}"
+                    # Process tasks with ID offset
+                    chunk_tasks = []
+                    for task_idx, task_data in enumerate(tasks_data):
+                        if not isinstance(task_data, dict):
+                            logger.warning(
+                                f"Chunk {chunk_num}: Invalid task entry, skipping"
+                            )
+                            continue
+
+                        # Track the original/local task ID from the planner
+                        local_task_id = task_data.get("id")
+                        if not local_task_id:
+                            # Generate local ID for this chunk (1-indexed)
+                            local_task_id = f"task-{task_idx + 1}"
+                            task_data["id"] = local_task_id
+
+                        # Extract the numeric part for remapping
+                        try:
+                            local_num = int(local_task_id.split("-")[1])
+                        except (ValueError, IndexError):
+                            local_num = task_idx + 1
+
+                        # Generate global task ID based on offset
+                        global_task_id = f"task-{task_id_offset + local_num}"
 
                     # Remap dependencies
                     dependencies = task_data.get("depends_on") or task_data.get("dependencies", [])
@@ -472,34 +499,33 @@ async def _expand_chunked_plan(
                         f"Chunk {chunk_num}: Task {global_task_id} - {title} ({estimated_complexity})"
                     )
 
-                # Track task count for this chunk
-                chunk_task_counts.append(len(chunk_tasks))
+                    # Track task count for this chunk
+                    chunk_task_counts.append(len(chunk_tasks))
 
-                # Add edges from this chunk
-                task_id_set = set(all_tasks.keys())
-                chunk_edges = _merge_edges(raw_edges, tasks_data, task_id_set)
-                global_edges.extend(chunk_edges)
+                    # Add edges from this chunk
+                    task_id_set = set(all_tasks.keys())
+                    chunk_edges = _merge_edges(raw_edges, tasks_data, task_id_set)
+                    global_edges.extend(chunk_edges)
 
-                if progress_callback:
-                    progress_callback(
-                        f"Chunk {chunk_num} completed: {len(chunk_tasks)} tasks"
-                    )
+                    if progress_callback:
+                        progress_callback(
+                            f"Chunk {chunk_num} completed: {len(chunk_tasks)} tasks"
+                        )
+                except Exception as e:
+                    # Save chunk content for debugging
+                    chunk_debug_path = output_dir / f".chunk_{chunk_num}_error.md"
+                    try:
+                        with open(chunk_debug_path, "w") as f:
+                            f.write(f"# Chunk {chunk_num} ({chunk.id}) - FAILED\n\n")
+                            f.write(f"## Error\n{e}\n\n")
+                            f.write(f"## Chunk Content\n```\n{chunk_content}\n```\n")
+                        logger.info(f"Saved chunk debug info to: {chunk_debug_path}")
+                    except Exception:
+                        pass
 
-            except Exception as e:
-                # Save chunk content for debugging
-                chunk_debug_path = output_dir / f".chunk_{chunk_num}_error.md"
-                try:
-                    with open(chunk_debug_path, "w") as f:
-                        f.write(f"# Chunk {chunk_num} ({chunk.id}) - FAILED\n\n")
-                        f.write(f"## Error\n{e}\n\n")
-                        f.write(f"## Chunk Content\n```\n{chunk_content}\n```\n")
-                    logger.info(f"Saved chunk debug info to: {chunk_debug_path}")
-                except Exception:
-                    pass
-
-                raise PlanExpanderError(
-                    f"Failed to expand chunk {chunk_num} ({chunk.id}): {e}"
-                ) from e
+                    raise PlanExpanderError(
+                        f"Failed to expand chunk {chunk_num} ({chunk.id}): {e}"
+                    ) from e
 
             # Update task ID offset for next chunk
             task_id_offset += len(chunk_tasks)
