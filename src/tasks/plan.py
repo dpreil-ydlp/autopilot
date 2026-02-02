@@ -502,9 +502,9 @@ async def _expand_chunked_plan(
                             f"Chunk {chunk_num}: Task {global_task_id} - {title} ({estimated_complexity})"
                         )
     
-                        # Track task count for this chunk
-                        chunk_task_counts.append(len(chunk_tasks))
 
+                    # Track task count for this chunk
+                    chunk_task_counts.append(len(chunk_tasks))
                     # Add edges from this chunk
                     task_id_set = set(all_tasks.keys())
                     chunk_edges = _merge_edges(raw_edges, tasks_data, task_id_set)
