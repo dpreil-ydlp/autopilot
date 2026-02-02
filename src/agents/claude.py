@@ -2,6 +2,7 @@
 
 import json
 import logging
+import tempfile
 import time
 from pathlib import Path
 
@@ -421,17 +422,25 @@ Rules:
 Output ONLY the JSON, no other text."""
 
         manager = SubprocessManager(timeout_sec=timeout_sec)
+
+        # Use a neutral directory (home or temp) to avoid repo access during planning
+        # This prevents Claude from scanning repo files or using repo-based tools
+        if work_dir is None:
+            import tempfile
+            work_dir = Path(tempfile.gettempdir())
+
+        # For planning, use minimal output to reduce memory overhead
         result = await manager.run(
             command=[
                 self.cli_path,
                 "--permission-mode", self.permission_mode,
                 "--print",
-                "--verbose",
                 "--output-format", "stream-json",
-                "--include-partial-messages",
+                # Remove --verbose and --include-partial-messages for planning
+                # These cause excessive JSON output that can cause extraction failures
                 prompt,
             ],
-            cwd=work_dir or Path.cwd(),
+            cwd=work_dir,
         )
 
         if not result["success"]:
@@ -441,6 +450,26 @@ Output ONLY the JSON, no other text."""
 
         # Extract JSON from output
         output = result["output"]
+
+        # Truncate excessive output to prevent memory issues
+        max_output_size = 1024 * 1024  # 1MB max
+        if len(output) > max_output_size:
+            logger.warning(f"Output too large ({len(output)} bytes), truncating to {max_output_size} bytes")
+            # Try to find the end of the JSON by looking for closing braces
+            truncated = output[:max_output_size]
+            # Find last occurrence of complete JSON object
+            last_brace = truncated.rfind('}')
+            if last_brace > 0:
+                # Also check for matching opening brace
+                matching_open = truncated.rfind('{', 0, last_brace)
+                if matching_open >= 0:
+                    output = truncated[:last_brace + 1]
+                    logger.info(f"Truncated output to {len(output)} bytes (found JSON end)")
+                else:
+                    output = truncated[:max_output_size]
+            else:
+                output = truncated[:max_output_size]
+
         plan_data = self._extract_summary(output)
 
         if plan_data is None:
