@@ -497,11 +497,11 @@ async def _expand_chunked_plan(
                         parsed_task = parse_task_file(task_path)
                         all_tasks[global_task_id] = parsed_task
                         chunk_tasks.append(global_task_id)
-    
+                        
                         logger.info(
                             f"Chunk {chunk_num}: Task {global_task_id} - {title} ({estimated_complexity})"
                         )
-    
+                        
 
                     # Track task count for this chunk
                     chunk_task_counts.append(len(chunk_tasks))
