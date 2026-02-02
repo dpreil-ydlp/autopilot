@@ -878,18 +878,69 @@ class TestUATTask:
         # Fix 3: Ensure keys are quoted (unquoted keys)
         fixed = re.sub(r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)', r'\1"\2"\3', fixed)
 
-        # Fix 4: Remove single quotes and replace with double quotes (but careful with escaped quotes)
-        # This is tricky, so we'll try it and if it fails, we revert
+        # Fix 4: Replace single-quoted strings with double-quoted strings
+        # Only replace single quotes that are actual string delimiters, not inside double-quoted strings
         try:
-            # Replace single quotes with double quotes, but preserve escaped single quotes
-            temp = fixed
-            # First, protect escaped single quotes
-            temp = temp.replace("\\'", "___SINGLE_QUOTE_ESC___")
-            # Then replace single quotes with double quotes
-            temp = temp.replace("'", '"')
-            # Restore escaped single quotes
-            temp = temp.replace("___SINGLE_QUOTE_ESC___", "\\'")
-            fixed = temp
+            # Pattern to match single-quoted strings (not inside double quotes)
+            # This regex looks for 'string' where string doesn't contain unescaped quotes
+            # and is not inside a double-quoted string
+            def replace_single_quotes(text):
+                """Replace single-quoted strings with double-quoted strings."""
+                result = []
+                i = 0
+                in_double_quote = False
+                in_single_quote = False
+                escape_next = False
+
+                while i < len(text):
+                    char = text[i]
+
+                    if escape_next:
+                        result.append(char)
+                        escape_next = False
+                    elif char == '\\':
+                        result.append(char)
+                        escape_next = True
+                    elif char == '"' and not in_single_quote:
+                        in_double_quote = not in_double_quote
+                        result.append(char)
+                    elif char == "'" and not in_double_quote:
+                        # This might be a single-quote string delimiter
+                        # Look ahead to see if it's matched
+                        j = i + 1
+                        while j < len(text):
+                            if text[j] == '\\' and j + 1 < len(text):
+                                j += 2  # Skip escaped char
+                            elif text[j] == "'":
+                                # Found matching single quote
+                                break
+                            elif text[j] == '"' or text[j] in '\n\r\t':
+                                # Hit something that breaks the string
+                                break
+                            else:
+                                j += 1
+
+                        if j < len(text) and text[j] == "'":
+                            # This is a single-quoted string, replace both quotes
+                            result.append('"')
+                            # Add the content
+                            content = text[i+1:j]
+                            # Escape any double quotes in the content
+                            content = content.replace('"', '\\"')
+                            result.append(content)
+                            result.append('"')
+                            i = j
+                        else:
+                            # Not a matched string, keep the quote
+                            result.append(char)
+                    else:
+                        result.append(char)
+
+                    i += 1
+
+                return ''.join(result)
+
+            fixed = replace_single_quotes(fixed)
         except Exception:
             pass  # Keep original if this fails
 
