@@ -404,106 +404,106 @@ async def _expand_chunked_plan(
                         # Generate global task ID based on offset
                         global_task_id = f"task-{task_id_offset + local_num}"
 
-                    # Remap dependencies
-                    dependencies = task_data.get("depends_on") or task_data.get("dependencies", [])
-                    if isinstance(dependencies, str):
-                        dependencies = [dependencies]
-                    if isinstance(dependencies, list):
-                        # Remap dependency IDs to global IDs
-                        remapped_deps = []
-                        for dep in dependencies:
-                            if isinstance(dep, str) and dep.startswith("task-"):
-                                try:
-                                    dep_num = int(dep.split("-")[1])
-                                    global_dep = f"task-{task_id_offset + dep_num}"
-                                    remapped_deps.append(global_dep)
-                                except (ValueError, IndexError):
-                                    # Keep original if parsing fails
+                        # Remap dependencies
+                        dependencies = task_data.get("depends_on") or task_data.get("dependencies", [])
+                        if isinstance(dependencies, str):
+                            dependencies = [dependencies]
+                        if isinstance(dependencies, list):
+                            # Remap dependency IDs to global IDs
+                            remapped_deps = []
+                            for dep in dependencies:
+                                if isinstance(dep, str) and dep.startswith("task-"):
+                                    try:
+                                        dep_num = int(dep.split("-")[1])
+                                        global_dep = f"task-{task_id_offset + dep_num}"
+                                        remapped_deps.append(global_dep)
+                                    except (ValueError, IndexError):
+                                        # Keep original if parsing fails
+                                        remapped_deps.append(dep)
+                                else:
                                     remapped_deps.append(dep)
-                            else:
-                                remapped_deps.append(dep)
-                        dependencies = remapped_deps
-
-                    # Update task data with remapped dependencies
-                    task_data["depends_on"] = dependencies
-
-                    # Extract other fields
-                    description = task_data.get("description") or task_data.get("goal") or ""
-                    title = task_data.get("title") or (description if description else f"Task {global_task_id}")
-
-                    # Extract validation commands
-                    validation_commands = task_data.get("validation_commands", {})
-                    if not isinstance(validation_commands, dict):
-                        validation_commands = {}
-
-                    # Extract allowed paths
-                    raw_allowed_paths = task_data.get("allowed_paths")
-                    inferred_allowed = _infer_allowed_paths(title, description, plan_path.parent)
-
-                    def is_generic_allowed_paths(paths: list[str]) -> bool:
-                        normalized = {
-                            p.rstrip("/").strip() for p in paths if p and str(p).strip()
-                        }
-                        return bool(normalized) and normalized.issubset({"src", "tests"})
-
-                    if isinstance(raw_allowed_paths, list) and raw_allowed_paths:
-                        allowed_paths = [
-                            str(p) for p in raw_allowed_paths if str(p).strip()
-                        ]
-                        if inferred_allowed and is_generic_allowed_paths(
-                            allowed_paths
-                        ):
-                            allowed_paths = inferred_allowed
-                    else:
-                        allowed_paths = inferred_allowed or ["src/", "tests/"]
-
-                    skills_used = (
-                        task_data.get("suggested_claude_skills")
-                        or task_data.get("suggested_skills")
-                        or task_data.get("skills_used", [])
-                    )
-                    mcp_servers_used = task_data.get("suggested_mcp_servers") or task_data.get(
-                        "mcp_servers_used", []
-                    )
-                    subagents_used = task_data.get("suggested_subagents") or task_data.get(
-                        "subagents_used", []
-                    )
-                    estimated_complexity = task_data.get("estimated_complexity", "medium")
-                    goal = task_data.get("goal", description)
-                    acceptance_criteria = task_data.get("acceptance_criteria", [])
-
-                    # Generate task file content
-                    task_content = _generate_task_file(
-                        task_id=global_task_id,
-                        title=title,
-                        description=description,
-                        dependencies=dependencies,
-                        goal=goal,
-                        acceptance_criteria=acceptance_criteria,
-                        allowed_paths=allowed_paths,
-                        skills_used=skills_used,
-                        mcp_servers_used=mcp_servers_used,
-                        subagents_used=subagents_used,
-                        estimated_complexity=estimated_complexity,
-                        validation_commands=validation_commands,
-                    )
-
-                    # Write task file
-                    task_path = output_dir / f"{global_task_id}.md"
-                    with open(task_path, "w") as f:
-                        f.write(task_content)
-
-                    # Parse the generated task file
-                    parsed_task = parse_task_file(task_path)
-                    all_tasks[global_task_id] = parsed_task
-                    chunk_tasks.append(global_task_id)
-
-                    logger.info(
-                        f"Chunk {chunk_num}: Task {global_task_id} - {title} ({estimated_complexity})"
-                    )
-
-                    # Track task count for this chunk
-                    chunk_task_counts.append(len(chunk_tasks))
+                            dependencies = remapped_deps
+    
+                        # Update task data with remapped dependencies
+                        task_data["depends_on"] = dependencies
+    
+                        # Extract other fields
+                        description = task_data.get("description") or task_data.get("goal") or ""
+                        title = task_data.get("title") or (description if description else f"Task {global_task_id}")
+    
+                        # Extract validation commands
+                        validation_commands = task_data.get("validation_commands", {})
+                        if not isinstance(validation_commands, dict):
+                            validation_commands = {}
+    
+                        # Extract allowed paths
+                        raw_allowed_paths = task_data.get("allowed_paths")
+                        inferred_allowed = _infer_allowed_paths(title, description, plan_path.parent)
+    
+                        def is_generic_allowed_paths(paths: list[str]) -> bool:
+                            normalized = {
+                                p.rstrip("/").strip() for p in paths if p and str(p).strip()
+                            }
+                            return bool(normalized) and normalized.issubset({"src", "tests"})
+    
+                        if isinstance(raw_allowed_paths, list) and raw_allowed_paths:
+                            allowed_paths = [
+                                str(p) for p in raw_allowed_paths if str(p).strip()
+                            ]
+                            if inferred_allowed and is_generic_allowed_paths(
+                                allowed_paths
+                            ):
+                                allowed_paths = inferred_allowed
+                        else:
+                            allowed_paths = inferred_allowed or ["src/", "tests/"]
+    
+                        skills_used = (
+                            task_data.get("suggested_claude_skills")
+                            or task_data.get("suggested_skills")
+                            or task_data.get("skills_used", [])
+                        )
+                        mcp_servers_used = task_data.get("suggested_mcp_servers") or task_data.get(
+                            "mcp_servers_used", []
+                        )
+                        subagents_used = task_data.get("suggested_subagents") or task_data.get(
+                            "subagents_used", []
+                        )
+                        estimated_complexity = task_data.get("estimated_complexity", "medium")
+                        goal = task_data.get("goal", description)
+                        acceptance_criteria = task_data.get("acceptance_criteria", [])
+    
+                        # Generate task file content
+                        task_content = _generate_task_file(
+                            task_id=global_task_id,
+                            title=title,
+                            description=description,
+                            dependencies=dependencies,
+                            goal=goal,
+                            acceptance_criteria=acceptance_criteria,
+                            allowed_paths=allowed_paths,
+                            skills_used=skills_used,
+                            mcp_servers_used=mcp_servers_used,
+                            subagents_used=subagents_used,
+                            estimated_complexity=estimated_complexity,
+                            validation_commands=validation_commands,
+                        )
+    
+                        # Write task file
+                        task_path = output_dir / f"{global_task_id}.md"
+                        with open(task_path, "w") as f:
+                            f.write(task_content)
+    
+                        # Parse the generated task file
+                        parsed_task = parse_task_file(task_path)
+                        all_tasks[global_task_id] = parsed_task
+                        chunk_tasks.append(global_task_id)
+    
+                        logger.info(
+                            f"Chunk {chunk_num}: Task {global_task_id} - {title} ({estimated_complexity})"
+                        )
+    
+                        # Track task count for this chunk
+                        chunk_task_counts.append(len(chunk_tasks))
 
                     # Add edges from this chunk
                     task_id_set = set(all_tasks.keys())
