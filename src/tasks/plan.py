@@ -324,16 +324,19 @@ async def _expand_chunked_plan(
                 chunk_content = f.read()
 
             # Detect meta-content chunks (testing, documentation, etc.)
+            # Use more specific patterns to avoid false positives on implementation content
             meta_content_patterns = [
-                "performance testing", "security testing", "documentation",
-                "supporting documents", "source files", "implementation summary",
-                "verification plan", "testing checklist", "known issues"
+                "## performance testing", "## security testing", "## documentation",
+                "### supporting documents", "source files:", "## implementation summary",
+                "## verification plan", "## testing checklist", "## known issues",
+                "## summary"  # Catch-all for summary sections at end
             ]
             chunk_lower = chunk_content.lower()
             meta_content_score = sum(1 for pattern in meta_content_patterns if pattern in chunk_lower)
 
-            # If chunk is primarily meta-content (3+ patterns), skip expansion
-            if meta_content_score >= 3:
+            # If chunk is primarily meta-content (2+ heading-level patterns), skip expansion
+            # Using 2 instead of 3 since patterns are now more specific (headings with ##)
+            if meta_content_score >= 2:
                 logger.info(
                     f"Chunk {chunk_num}/{len(chunks)}: Detected meta-content "
                     f"({meta_content_score} patterns), skipping DAG expansion"

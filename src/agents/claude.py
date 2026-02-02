@@ -429,15 +429,14 @@ Output ONLY the JSON, no other text."""
             import tempfile
             work_dir = Path(tempfile.gettempdir())
 
-        # For planning, use minimal output to reduce memory overhead
+        # For planning, use verbose output (required by --output-format=stream-json with --print)
         result = await manager.run(
             command=[
                 self.cli_path,
                 "--permission-mode", self.permission_mode,
                 "--print",
+                "--verbose",  # Required when using --output-format=stream-json with --print
                 "--output-format", "stream-json",
-                # Remove --verbose and --include-partial-messages for planning
-                # These cause excessive JSON output that can cause extraction failures
                 prompt,
             ],
             cwd=work_dir,
