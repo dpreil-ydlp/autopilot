@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autopilot"
-version = "0.1.41"
+version = "0.1.47"
 description = "Local-first controller orchestrating builder + reviewer loop with Claude Code CLI and Codex"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,6 +26,8 @@ dependencies = [
     "aiofiles>=23.2.0",
     "rich>=13.7.0",
     "python-dateutil>=2.8.0",
+    "openai>=1.0.0",
+    "anthropic>=0.18.0",
 ]
 
 [project.optional-dependencies]

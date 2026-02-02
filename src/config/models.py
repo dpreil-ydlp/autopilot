@@ -61,7 +61,7 @@ class SafetyConfig(BaseModel):
 class ReviewerConfig(BaseModel):
     """Reviewer agent configuration."""
 
-    mode: str = Field(default="codex_cli", description="codex_cli or openai_api")
+    mode: str = Field(default="codex_cli", description="codex_cli, openai_api, or claude")
     model: str | None = Field(
         default="gpt-5.2-codex",
         description="Model for openai_api mode (falls back to OPENAI_MODEL)",
@@ -86,7 +86,7 @@ class ReviewerConfig(BaseModel):
 class PlannerConfig(BaseModel):
     """Planner agent configuration."""
 
-    mode: str = Field(default="codex_cli", description="codex_cli or openai_api")
+    mode: str = Field(default="codex_cli", description="codex_cli, openai_api, or claude")
     model: str | None = Field(
         default="gpt-5.2-codex",
         description="Model for openai_api mode (falls back to OPENAI_MODEL)",
@@ -124,8 +124,8 @@ class BuilderConfig(BaseModel):
     )
     api_key_env: str | None = Field(default=None, description="API key env var name (openai_api)")
     disable_mcp: bool = Field(
-        default=True,
-        description="Disable MCP server startup for Codex CLI runs",
+        default=False,
+        description="Disable MCP server startup for Codex CLI runs (default off for builder)",
     )
     codex_home: str | None = Field(
         default=None,

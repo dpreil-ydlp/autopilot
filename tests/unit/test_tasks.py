@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from src.tasks.chunker import PlanChunker, PlanSection
 from src.tasks.parser import (
     TaskParseError,
     parse_task_file,
@@ -12,6 +13,7 @@ from src.tasks.parser import (
 from src.tasks.plan import (
     TaskDAG,
     _generate_task_file,
+    _infer_allowed_paths,
     compute_ready_set,
     validate_dag,
 )
@@ -133,6 +135,18 @@ def test_generate_task_file():
     assert "## Acceptance Criteria" in content
 
 
+def test_infer_allowed_paths_prefers_explicit_paths(tmp_path):
+    """Infer allowed_paths from explicit file path mentions in task text."""
+    repo_root = tmp_path
+    title = "Smoke task"
+    description = (
+        "Add src/autopilot_smoke/math_add.py and tests/autopilot_smoke/test_math_add.py. "
+        "Only touch src/autopilot_smoke/ and tests/autopilot_smoke/."
+    )
+    allowed = _infer_allowed_paths(title=title, description=description, repo_root=repo_root)
+    assert allowed == ["src/autopilot_smoke/", "tests/autopilot_smoke/"]
+
+
 def test_compute_ready_set():
     """Test computing ready set from DAG."""
     # Create simple DAG: task1 -> task2 -> task3
@@ -185,3 +199,133 @@ def test_validate_dag_invalid_edge():
     errors = validate_dag(dag)
     assert len(errors) > 0
     assert any("non-existent task" in e for e in errors)
+
+
+def test_chunker_small_plan_no_chunking(tmp_path):
+    """Test that small plans don't get chunked."""
+    plan_path = tmp_path / "small_plan.md"
+    plan_path.write_text(
+        """# Plan: Small Plan
+
+## Overview
+A small plan that doesn't need chunking.
+
+## Tasks
+1. Task one
+2. Task two
+"""
+    )
+
+    chunker = PlanChunker(plan_path)
+    metadata = chunker.analyze()
+
+    assert metadata["needs_chunking"] is False
+    assert metadata["total_tokens"] < PlanChunker.CHUNK_TARGET_TOKENS
+
+
+def test_chunker_large_plan_needs_chunking(tmp_path):
+    """Test that large plans get chunked."""
+    plan_path = tmp_path / "large_plan.md"
+
+    # Create a large plan (3000+ tokens)
+    sections = ["# Plan: Large Plan\n\n## Overview\n"]
+    for i in range(100):
+        sections.append(f"\n### Section {i}\n")
+        sections.append("Content " * 50)  # ~300 tokens per section
+
+    plan_path.write_text("".join(sections))
+
+    chunker = PlanChunker(plan_path)
+    metadata = chunker.analyze()
+
+    assert metadata["needs_chunking"] is True
+    assert metadata["total_tokens"] > PlanChunker.CHUNK_TARGET_TOKENS
+    assert len(metadata["sections"]) > 0
+
+
+def test_chunker_extracts_sections(tmp_path):
+    """Test that chunker extracts markdown sections correctly."""
+    plan_path = tmp_path / "sections.md"
+    plan_path.write_text(
+        """# Plan: Test
+
+## Overview
+This is the overview.
+
+## Task 1
+First task details.
+
+### Subsection
+More details.
+
+## Task 2
+Second task details.
+"""
+    )
+
+    chunker = PlanChunker(plan_path)
+    metadata = chunker.analyze()
+
+    assert len(metadata["sections"]) >= 3  # Overview, Task 1, Task 2
+
+    # Check section properties
+    overview = next((s for s in metadata["sections"] if s.title == "Overview"), None)
+    assert overview is not None
+    assert overview.level == 2
+    assert "overview" in overview.content.lower()
+
+
+def test_chunker_creates_chunks_within_limits(tmp_path):
+    """Test that created chunks respect token limits."""
+    plan_path = tmp_path / "large_plan.md"
+
+    # Create content that will be chunked
+    sections = ["# Plan: Large\n\n"]
+    for i in range(50):
+        sections.append(f"\n## Section {i}\n")
+        sections.append("A" * 200)  # Add content
+
+    plan_path.write_text("".join(sections))
+
+    chunker = PlanChunker(plan_path)
+    metadata = chunker.analyze()
+    chunks = chunker.create_chunks(metadata)
+
+    # Verify all chunks are within limits
+    for chunk in chunks:
+        assert chunk.estimated_tokens <= PlanChunker.CHUNK_MAX_TOKENS
+
+    # Verify dependencies are sequential
+    for i, chunk in enumerate(chunks):
+        if i == 0:
+            assert chunk.dependencies == []
+        else:
+            assert chunk.dependencies == [f"chunk-{i}"]
+
+
+def test_chunker_writes_chunk_files(tmp_path):
+    """Test that chunks can be written to files."""
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text(
+        """# Plan
+
+## Section 1
+Content 1
+
+## Section 2
+Content 2
+"""
+    )
+
+    chunker = PlanChunker(plan_path)
+    metadata = chunker.analyze()
+    chunks = chunker.create_chunks(metadata)
+
+    # Write first chunk
+    if chunks:
+        output_path = tmp_path / "chunk_1.md"
+        chunker.write_chunk(chunks[0], output_path)
+
+        assert output_path.exists()
+        content = output_path.read_text()
+        assert "Section 1" in content or "Section 2" in content

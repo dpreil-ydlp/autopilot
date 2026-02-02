@@ -79,6 +79,16 @@ fi
 
 echo ""
 echo "Done. Try: autopilot -h"
+if command -v autopilot >/dev/null 2>&1; then
+  echo ""
+  echo "Installed:"
+  autopilot --version || true
+  echo "Path:"
+  command -v autopilot || true
+  echo ""
+  echo "Diagnostics:"
+  autopilot doctor || true
+fi
 
 # Ensure global shim if possible
 PIPX_BIN="${HOME}/.local/bin"

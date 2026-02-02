@@ -2,7 +2,10 @@
 
 import logging
 import os
+import re
 import shlex
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,6 +47,7 @@ class ValidationRunner:
         timeout_sec: int = 120,
         log_dir: Path | None = None,
         allow_no_tests: bool = True,
+        venv_dir: Path | None = None,
     ):
         """Initialize validation runner.
 
@@ -56,6 +60,10 @@ class ValidationRunner:
         self.timeout_sec = timeout_sec
         self.log_dir = log_dir
         self.allow_no_tests = allow_no_tests
+        # Shared per-repo virtualenv (keeps project deps out of Autopilot's global env).
+        self.venv_dir = venv_dir or (work_dir / ".autopilot" / "venv")
+        self._venv_python: Path | None = None
+        self._auto_installed: set[str] = set()
 
     async def run_format(
         self,
@@ -238,10 +246,33 @@ class ValidationRunner:
         Returns:
             ValidationResult
         """
-        # Some task plans emit `pytest ...` commands, but the `pytest` entrypoint may not be on
-        # PATH in non-interactive shells. Prefer `python3 -m pytest` when we can detect it.
-        if command_type in {"tests", "uat"}:
-            command = self._rewrite_pytest_entrypoint(command)
+        venv_python: Path | None = None
+        env: dict[str, str] | None = None
+        if command_type in {"format", "lint", "tests", "uat"} and self._should_use_repo_venv(
+            command_type=command_type,
+            command=command,
+        ):
+            venv_python = await self._ensure_repo_venv()
+            if venv_python:
+                env = self._env_for_venv(venv_python)
+                if command_type in {"tests", "uat"}:
+                    command = self._rewrite_module_entrypoint(
+                        command=command,
+                        module="pytest",
+                        python_executable=str(venv_python),
+                    )
+                if command_type in {"format", "lint"}:
+                    command = self._rewrite_module_entrypoint(
+                        command=command,
+                        module="ruff",
+                        python_executable=str(venv_python),
+                    )
+
+        if command_type == "lint" and self._command_invokes_tool(command, tool="ruff"):
+            normalized = self._normalize_ruff_lint_command(command)
+            if normalized != command:
+                logger.info("Normalized ruff lint command: %s -> %s", command, normalized)
+                command = normalized
 
         # Validation commands are user-configured strings and often rely on shell features
         # (e.g. `&&`, pipes, env vars, `source`/`.`). Run them through a shell for robustness.
@@ -261,8 +292,60 @@ class ValidationRunner:
             result = await manager.run(
                 command=args,
                 cwd=self.work_dir,
+                env=env,
                 capture_output=True,
             )
+
+            # If we rewrote to `python -m ...` and the module isn't installed, try to install it
+            # into the Autopilot python environment and re-run (best-effort). This keeps Autopilot
+            # "just working" without requiring the user to pre-install tools.
+            install_attempts = 0
+            while (
+                not result["success"]
+                and command_type in {"format", "lint", "tests", "uat"}
+                and env is not None
+                and self._looks_like_missing_python_module(result.get("output", "") or "")
+                and install_attempts < 3
+            ):
+                module = self._missing_python_module_name(result.get("output", "") or "")
+                if not module or not self._is_safe_module_name(module):
+                    break
+                if module in self._auto_installed:
+                    break
+                installed = await self._ensure_module_available(module=module)
+                if not installed:
+                    break
+                self._auto_installed.add(module)
+                install_attempts += 1
+                result = await manager.run(
+                    command=args,
+                    cwd=self.work_dir,
+                    env=env,
+                    capture_output=True,
+                )
+
+            # Ruff is frequently used as a lint gate and Autopilot generates `tests/uat/` files.
+            # If lint fails due to fixable issues in those generated files (common when older
+            # Autopilot versions wrote unused imports), auto-fix them and retry once.
+            if (
+                not result["success"]
+                and command_type == "lint"
+                and env is not None
+                and venv_python is not None
+                and self._command_invokes_tool(command, tool="ruff")
+            ):
+                fixed = await self._auto_fix_ruff_uat_files(
+                    python=venv_python,
+                    env=env,
+                    output=result.get("output", "") or "",
+                )
+                if fixed:
+                    result = await manager.run(
+                        command=args,
+                        cwd=self.work_dir,
+                        env=env,
+                        capture_output=True,
+                    )
 
             if (
                 command_type in {"tests", "uat"}
@@ -298,12 +381,58 @@ class ValidationRunner:
                 output=f"Execution error: {e}",
             )
 
-    @staticmethod
-    def _rewrite_pytest_entrypoint(command: str) -> str:
-        """Rewrite leading `pytest` invocation to `python3 -m pytest` when possible.
+    async def _auto_fix_ruff_uat_files(
+        self,
+        python: Path,
+        env: dict[str, str],
+        output: str,
+    ) -> bool:
+        """Best-effort: run `ruff check --fix` + `ruff format` on UAT files referenced in output."""
+        uat_paths = self._extract_uat_paths_from_ruff_output(output)
+        if not uat_paths:
+            return False
 
-        This preserves common patterns like `ENV=1 pytest -q` by only rewriting the first
-        non-assignment token.
+        existing = [p for p in uat_paths if (self.work_dir / p).exists()]
+        if not existing:
+            return False
+
+        logger.warning("Auto-fixing ruff issues in generated UAT files: %s", ", ".join(existing))
+        manager = SubprocessManager(timeout_sec=300, log_dir=self.log_dir)
+        try:
+            await manager.run(
+                command=[str(python), "-m", "ruff", "check", "--fix", *existing],
+                cwd=self.work_dir,
+                env=env,
+                capture_output=True,
+            )
+            await manager.run(
+                command=[str(python), "-m", "ruff", "format", *existing],
+                cwd=self.work_dir,
+                env=env,
+                capture_output=True,
+            )
+            return True
+        except Exception as e:
+            logger.warning("Failed to auto-fix UAT files with ruff: %s", e)
+            return False
+
+    @staticmethod
+    def _extract_uat_paths_from_ruff_output(output: str) -> list[str]:
+        # Ruff outputs file locations in a few formats, e.g.:
+        #   --> tests/uat/test_task_5_uat.py:1:8
+        #   tests/uat/test_task_5_uat.py:1:8: F401 ...
+        # Also handle Windows-style paths in output.
+        raw = set(
+            m.replace("\\", "/")
+            for m in re.findall(r"(?:tests/uat/|tests\\\\uat\\\\)[^\s:]+\.py", output)
+        )
+        return sorted(raw)
+
+    @staticmethod
+    def _rewrite_module_entrypoint(command: str, module: str, python_executable: str) -> str:
+        """Rewrite leading `<module>` or `python -m <module>` to a specific python executable.
+
+        Preserves patterns like `ENV=1 pytest -q` by only rewriting the first non-assignment token.
         """
         try:
             parts = shlex.split(command, posix=(os.name != "nt"))
@@ -315,7 +444,6 @@ class ValidationRunner:
 
         idx = 0
         for i, token in enumerate(parts):
-            # Stop at first non KEY=VALUE assignment.
             if token.startswith("-") or "=" not in token:
                 idx = i
                 break
@@ -326,14 +454,317 @@ class ValidationRunner:
         else:
             idx = len(parts)
 
-        if idx < len(parts) and parts[idx] == "pytest":
-            parts[idx : idx + 1] = ["python3", "-m", "pytest"]
-            try:
-                return shlex.join(parts)
-            except Exception:
-                return " ".join(parts)
+        if idx >= len(parts):
+            return command
 
-        return command
+        head = parts[idx]
+        if head == module:
+            parts[idx : idx + 1] = [python_executable, "-m", module]
+        elif (
+            head.startswith("python")
+            and idx + 2 < len(parts)
+            and parts[idx + 1] == "-m"
+            and parts[idx + 2] == module
+        ):
+            parts[idx] = python_executable
+        else:
+            return command
+
+        try:
+            return shlex.join(parts)
+        except Exception:
+            return " ".join(parts)
+
+    @staticmethod
+    def _normalize_ruff_lint_command(command: str) -> str:
+        """Normalize ruff lint commands to include an explicit subcommand.
+
+        Newer ruff versions require `ruff check ...` for linting. Some configs still
+        use `ruff <paths>` (or `python -m ruff <paths>`). When detected, rewrite to
+        `ruff check ...` / `python -m ruff check ...`.
+        """
+        try:
+            parts = shlex.split(command, posix=(os.name != "nt"))
+        except Exception:
+            return command
+
+        if not parts:
+            return command
+
+        def is_global_help_or_version(token: str) -> bool:
+            return token in {"-h", "--help", "-V", "--version"}
+
+        known_subcommands = {"check", "format", "rule", "clean", "analyze", "lsp", "server"}
+
+        changed = False
+        i = 0
+        while i < len(parts):
+            if parts[i] == "ruff":
+                ruff_idx = i
+                next_idx = ruff_idx + 1
+                if next_idx >= len(parts):
+                    parts.extend(["check", "."])
+                    changed = True
+                    break
+                nxt = parts[next_idx]
+                if is_global_help_or_version(nxt) or nxt in known_subcommands:
+                    i = next_idx + 1
+                    continue
+                parts.insert(next_idx, "check")
+                changed = True
+                i = next_idx + 2
+                continue
+
+            if (
+                parts[i].startswith("python")
+                and i + 2 < len(parts)
+                and parts[i + 1] == "-m"
+                and parts[i + 2] == "ruff"
+            ):
+                ruff_idx = i + 2
+                next_idx = ruff_idx + 1
+                if next_idx >= len(parts):
+                    parts.extend(["check", "."])
+                    changed = True
+                    break
+                nxt = parts[next_idx]
+                if is_global_help_or_version(nxt) or nxt in known_subcommands:
+                    i = next_idx + 1
+                    continue
+                parts.insert(next_idx, "check")
+                changed = True
+                i = next_idx + 2
+                continue
+
+            i += 1
+
+        if not changed:
+            return command
+
+        try:
+            return shlex.join(parts)
+        except Exception:
+            return " ".join(parts)
+
+    @staticmethod
+    def _looks_like_missing_python_module(output: str) -> bool:
+        return "No module named " in output or "ModuleNotFoundError" in output
+
+    @staticmethod
+    def _missing_python_module_name(output: str) -> str | None:
+        # Normalize common pytest tracebacks into a module name.
+        # Example:
+        #   ModuleNotFoundError: No module named 'fastapi'
+        marker = "No module named "
+        idx = output.find(marker)
+        if idx == -1:
+            return None
+        rest = output[idx + len(marker) :].strip()
+        if rest.startswith("'") and "'" in rest[1:]:
+            return rest.split("'", 2)[1]
+        if rest.startswith('"') and '"' in rest[1:]:
+            return rest.split('"', 2)[1]
+        # Fallback: take first token.
+        return rest.split()[0] if rest else None
+
+    @staticmethod
+    def _is_safe_module_name(module: str) -> bool:
+        # Best-effort guard against weird strings being treated as pip requirements.
+        if not module or len(module) > 64:
+            return False
+        for ch in module:
+            if not (ch.isalnum() or ch in {"_", "-", "."}):
+                return False
+        return True
+
+    @staticmethod
+    def _should_use_repo_venv(command_type: str, command: str) -> bool:
+        """Return True if this validation command should run inside the repo venv.
+
+        We only create/activate the repo venv when we detect Python tooling we manage
+        (`ruff` / `pytest`). This avoids creating Python environments for non-Python repos
+        (e.g., `npm test`).
+        """
+        if command_type in {"format", "lint"}:
+            return ValidationRunner._command_invokes_tool(command, tool="ruff")
+        if command_type in {"tests", "uat"}:
+            return ValidationRunner._command_invokes_tool(command, tool="pytest")
+        return False
+
+    @staticmethod
+    def _command_invokes_tool(command: str, tool: str) -> bool:
+        """Detect if the command mentions `tool` or `python -m tool` anywhere.
+
+        Commands are user-provided and can include shell chains like `cd backend && ruff check .`.
+        """
+        try:
+            parts = shlex.split(command, posix=(os.name != "nt"))
+        except Exception:
+            return tool in command
+
+        if not parts:
+            return False
+
+        for idx, token in enumerate(parts):
+            if token == tool:
+                return True
+            if token.startswith("python") and idx + 2 < len(parts) and parts[idx + 1] == "-m":
+                if parts[idx + 2] == tool:
+                    return True
+        return False
+
+    async def _ensure_module_available(self, module: str) -> bool:
+        """Ensure a module is importable by the repo venv (best-effort)."""
+        python = await self._ensure_repo_venv()
+        if python is None:
+            return False
+
+        logger.warning("Auto-installing missing module into repo venv: %s", module)
+        manager = SubprocessManager(timeout_sec=300, log_dir=self.log_dir)
+        try:
+            result = await manager.run(
+                command=[str(python), "-m", "pip", "install", "-q", module],
+                cwd=self.work_dir,
+                capture_output=True,
+            )
+            if not result.get("success"):
+                logger.error("Failed to auto-install %s: %s", module, result.get("output", ""))
+                return False
+            return True
+        except Exception as e:
+            logger.error("Failed to auto-install %s: %s", module, e)
+            return False
+
+    async def _ensure_repo_venv(self) -> Path | None:
+        """Create/boot a shared per-repo venv and return its python executable."""
+        venv_python = self._venv_python_path()
+        if self._venv_python and venv_python.exists():
+            return self._venv_python
+
+        lock_dir = self.venv_dir.parent / "venv.lock"
+        start = time.time()
+        while True:
+            try:
+                lock_dir.mkdir(parents=True, exist_ok=False)
+                break
+            except FileExistsError:
+                if time.time() - start > 60:
+                    break
+                await self._sleep(0.2)
+
+        try:
+            venv_python = self._venv_python_path()
+            if not venv_python.exists():
+                self.venv_dir.parent.mkdir(parents=True, exist_ok=True)
+                manager = SubprocessManager(timeout_sec=300, log_dir=self.log_dir)
+                result = await manager.run(
+                    command=[sys.executable, "-m", "venv", str(self.venv_dir)],
+                    cwd=self.work_dir,
+                    capture_output=True,
+                )
+                if not result.get("success"):
+                    logger.error("Failed to create repo venv: %s", result.get("output", ""))
+                    return None
+
+            self._venv_python = self._venv_python_path()
+            await self._bootstrap_venv_tools()
+            await self._bootstrap_repo_python_projects()
+            return self._venv_python
+        finally:
+            try:
+                lock_dir.rmdir()
+            except Exception:
+                pass
+
+    def _venv_python_path(self) -> Path:
+        if os.name == "nt":
+            return self.venv_dir / "Scripts" / "python.exe"
+        return self.venv_dir / "bin" / "python"
+
+    def _env_for_venv(self, venv_python: Path) -> dict[str, str]:
+        env = os.environ.copy()
+        bindir = str(venv_python.parent)
+        env["VIRTUAL_ENV"] = str(self.venv_dir)
+        env["PATH"] = bindir + os.pathsep + env.get("PATH", "")
+        env["PYTHONNOUSERSITE"] = "1"
+        return env
+
+    async def _bootstrap_venv_tools(self) -> None:
+        python = self._venv_python_path()
+        if not python.exists():
+            return
+
+        manager = SubprocessManager(timeout_sec=300, log_dir=self.log_dir)
+
+        pip_ok = await manager.run(
+            command=[str(python), "-m", "pip", "--version"],
+            cwd=self.work_dir,
+            capture_output=True,
+        )
+        if not pip_ok.get("success"):
+            await manager.run(
+                command=[str(python), "-m", "ensurepip", "--upgrade"],
+                cwd=self.work_dir,
+                capture_output=True,
+            )
+
+        await manager.run(
+            command=[str(python), "-m", "pip", "install", "-q", "--upgrade", "pip"],
+            cwd=self.work_dir,
+            capture_output=True,
+        )
+        # Baseline tooling Autopilot runs across repos.
+        await manager.run(
+            command=[str(python), "-m", "pip", "install", "-q", "ruff", "pytest"],
+            cwd=self.work_dir,
+            capture_output=True,
+        )
+
+    async def _bootstrap_repo_python_projects(self) -> None:
+        python = self._venv_python_path()
+        if not python.exists():
+            return
+
+        marker = self.venv_dir / ".autopilot_projects_installed"
+        if marker.exists():
+            return
+
+        candidates = [Path(".")]
+        for sub in ("backend", "api", "server"):
+            candidates.append(Path(sub))
+
+        manager = SubprocessManager(timeout_sec=300, log_dir=self.log_dir)
+        for rel in candidates:
+            base = (self.work_dir / rel).resolve()
+            if not base.exists() or not base.is_dir():
+                continue
+
+            pyproject = base / "pyproject.toml"
+            requirements = base / "requirements.txt"
+
+            if pyproject.exists():
+                await manager.run(
+                    command=[str(python), "-m", "pip", "install", "-q", "-e", str(base)],
+                    cwd=self.work_dir,
+                    capture_output=True,
+                )
+            elif requirements.exists():
+                await manager.run(
+                    command=[str(python), "-m", "pip", "install", "-q", "-r", str(requirements)],
+                    cwd=self.work_dir,
+                    capture_output=True,
+                )
+
+        try:
+            marker.write_text("ok\n", encoding="utf-8")
+        except Exception:
+            pass
+
+    @staticmethod
+    async def _sleep(seconds: float) -> None:
+        import asyncio
+
+        await asyncio.sleep(seconds)
 
     def get_failure_summary(self, results: dict[str, ValidationResult]) -> str:
         """Generate summary of validation failures.

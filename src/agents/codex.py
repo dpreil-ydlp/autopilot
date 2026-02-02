@@ -41,7 +41,76 @@ class CodexAgent(BaseAgent):
         self.codex_home = config.get("codex_home")
         self.codex_overrides = config.get("codex_overrides", [])
         self._isolated_codex_home: Path | None = None
+        self._logged_mcp_info: bool = False
         self.max_retries = config.get("max_retries", 1)
+
+    @staticmethod
+    def _status_has_non_artifact_changes(porcelain: str) -> bool:
+        """Return True when `git status --porcelain` includes non-artifact paths.
+
+        We write Codex patch artifacts under `.autopilot/patches/` inside the repo. When a diff
+        fails to apply, those artifacts can be the only "working tree change". Treating that as
+        "Codex edited files directly" causes false-positive successes where nothing is applied.
+        """
+
+        def extract_path(line: str) -> str:
+            payload = line[3:].strip() if len(line) >= 4 else line.strip()
+            # Rename format: "R  old -> new"
+            if " -> " in payload:
+                payload = payload.split(" -> ", 1)[1].strip()
+            return payload
+
+        for raw in porcelain.splitlines():
+            line = raw.rstrip()
+            if not line:
+                continue
+            path = extract_path(line)
+            if not path:
+                continue
+
+            # Ignore known Autopilot artifacts and common noise.
+            if path == ".autopilot" or path.startswith(".autopilot/"):
+                continue
+            if path == "logs" or path.startswith("logs/"):
+                continue
+            if path == ".pytest_cache" or path.startswith(".pytest_cache/"):
+                continue
+            if "/__pycache__/" in f"/{path}/" or path.endswith((".pyc", ".pyo")):
+                continue
+
+            return True
+
+        return False
+
+    @classmethod
+    def _porcelain_non_artifact_entries(cls, porcelain: str) -> dict[str, str]:
+        """Return {path: status_code} filtered to non-artifact paths."""
+
+        def extract_path(line: str) -> str:
+            payload = line[3:].strip() if len(line) >= 4 else line.strip()
+            if " -> " in payload:
+                payload = payload.split(" -> ", 1)[1].strip()
+            return payload
+
+        entries: dict[str, str] = {}
+        for raw in porcelain.splitlines():
+            line = raw.rstrip()
+            if not line:
+                continue
+            code = line[:2]
+            path = extract_path(line)
+            if not path:
+                continue
+            if path == ".autopilot" or path.startswith(".autopilot/"):
+                continue
+            if path == "logs" or path.startswith("logs/"):
+                continue
+            if path == ".pytest_cache" or path.startswith(".pytest_cache/"):
+                continue
+            if "/__pycache__/" in f"/{path}/" or path.endswith((".pyc", ".pyo")):
+                continue
+            entries[path] = code
+        return entries
 
     async def execute(
         self,
@@ -63,10 +132,12 @@ class CodexAgent(BaseAgent):
                 wrapped_prompt = self._wrap_build_prompt(prompt)
                 if self.mode == "codex_cli":
                     manager = SubprocessManager(timeout_sec=timeout_sec)
+                    env = self._get_codex_env()
+                    self._log_mcp_info_once(env)
                     result = await manager.run(
                         self._build_codex_command(wrapped_prompt),
                         cwd=work_dir,
-                        env=self._get_codex_env(),
+                        env=env,
                     )
                     output_text = result["output"]
                 else:
@@ -89,22 +160,6 @@ class CodexAgent(BaseAgent):
                     try:
                         await self._apply_diff(diff, work_dir)
                     except AgentError as e:
-                        # Some codex invocations may have edited files directly (rare). If so,
-                        # accept those changes rather than failing on an apply error.
-                        status_mgr = SubprocessManager(timeout_sec=30)
-                        try:
-                            status = await status_mgr.run(
-                                ["git", "status", "--porcelain"],
-                                cwd=work_dir,
-                            )
-                            if status.get("output", "").strip():
-                                logger.warning(
-                                    "Codex diff failed to apply but working tree has changes; continuing"
-                                )
-                                return {**result, "success": True, "summary": None}
-                        except Exception:
-                            pass
-
                         # Retry with feedback so the model re-diffs against current state.
                         last_error = e
                         if retries < self.max_retries:
@@ -185,6 +240,13 @@ class CodexAgent(BaseAgent):
             if not s:
                 return False
 
+            # Codex CLI (and some wrappers) may append footer lines like:
+            #   tokens used
+            #   4,291
+            # Treat these as non-diff noise so we don't accidentally inject them into hunks.
+            if s.lower() == "tokens used":
+                return True
+
             for prefix in (
                 "#",
                 "import ",
@@ -264,8 +326,30 @@ class CodexAgent(BaseAgent):
 
         keep: list[str] = []
         in_hunk = False
+        first_diff_header: str | None = None
+        skipping_token_count = False
         for line in lines[start_idx:]:
+            # Codex CLI may append footer lines like:
+            #   tokens used
+            #   4,291
+            # Ignore these (they are not part of the patch).
+            stripped = line.strip()
+            lowered = stripped.lower()
+            if lowered == "tokens used" or lowered.startswith("tokens used:"):
+                skipping_token_count = True
+                continue
+            if skipping_token_count and stripped and stripped.replace(",", "").isdigit():
+                continue
+            skipping_token_count = False
+
             if line.startswith("diff --git"):
+                # Some Codex runs echo the patch twice (stdout + stderr). If we see the
+                # *first* diff header again, assume a new full patch is starting and keep only
+                # the most recent one.
+                if first_diff_header is None:
+                    first_diff_header = line
+                elif line == first_diff_header:
+                    keep = []
                 in_hunk = False
                 keep.append(line)
                 continue
@@ -309,6 +393,52 @@ class CodexAgent(BaseAgent):
             patch_text = f"{patch_text}\n"
         patch_path.write_text(patch_text, encoding="utf-8")
 
+        # `git apply` does not create intermediate directories for new files. Create any missing
+        # parent directories ahead of time so patches can apply cleanly.
+        try:
+            new_files: list[str] = []
+            saw_dev_null = False
+            for line in patch_text.splitlines():
+                if line.startswith("--- ") and line[4:].strip() == "/dev/null":
+                    saw_dev_null = True
+                    continue
+                if not line.startswith("+++ "):
+                    continue
+                path = line[4:].strip()
+                if path == "/dev/null":
+                    continue
+                if path.startswith("b/"):
+                    path = path[2:]
+                if not path or path.startswith("/"):
+                    continue
+                (target_dir / path).parent.mkdir(parents=True, exist_ok=True)
+                if saw_dev_null:
+                    new_files.append(path)
+                saw_dev_null = False
+
+            # If a patch treats a path as a "new file" but a leftover untracked file already
+            # exists (common across iterative build loops), `git apply` can fail with messages
+            # like "new file ... depends on old contents". Remove only *untracked* leftovers so
+            # the patch can be applied deterministically.
+            if new_files:
+                fs_mgr = SubprocessManager(timeout_sec=10)
+                for rel in new_files:
+                    candidate = target_dir / rel
+                    if not candidate.exists():
+                        continue
+                    tracked = await fs_mgr.run(
+                        ["git", "ls-files", "--error-unmatch", "--", rel],
+                        cwd=target_dir,
+                    )
+                    if tracked.get("success"):
+                        continue
+                    try:
+                        candidate.unlink()
+                    except IsADirectoryError:
+                        pass
+        except Exception:
+            pass
+
         manager = SubprocessManager(timeout_sec=60)
         apply_attempts = [
             ["git", "apply", "--whitespace=nowarn", str(patch_path)],
@@ -320,8 +450,16 @@ class CodexAgent(BaseAgent):
 
         last = None
         for cmd in apply_attempts:
+            # `git apply --3way` can leave conflict markers in the worktree if it partially
+            # applies. Avoid corrupting the working tree by running a check first.
+            check_cmd = ["git", "apply", "--check", *cmd[2:]]
+            check = await manager.run(check_cmd, cwd=target_dir)
+            if not check.get("success"):
+                last = check
+                continue
+
             last = await manager.run(cmd, cwd=target_dir)
-            if last["success"]:
+            if last.get("success"):
                 return
 
         raise AgentError(f"Failed to apply Codex diff: {last['output'] if last else ''}")
@@ -569,7 +707,9 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
                 prompt=prompt,
                 schema_path=self.json_schema_path,
             )
-            result = await manager.run(command, cwd=work_dir, env=self._get_codex_env())
+            env = self._get_codex_env()
+            self._log_mcp_info_once(env)
+            result = await manager.run(command, cwd=work_dir, env=env)
             try:
                 return self._parse_review_json(result["output"])
             except AgentError:
@@ -609,13 +749,15 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
         """Plan using Codex CLI."""
         try:
             manager = SubprocessManager(timeout_sec=timeout_sec)
+            env = self._get_codex_env()
+            self._log_mcp_info_once(env)
             result = await manager.run(
                 self._build_codex_command(
                     prompt=prompt,
                     schema_path=self.json_schema_path,
                 ),
                 cwd=work_dir,
-                env=self._get_codex_env(),
+                env=env,
             )
             try:
                 return self._parse_plan_json(result["output"])
@@ -656,10 +798,12 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
         """Generate UAT using Codex CLI."""
         try:
             manager = SubprocessManager(timeout_sec=timeout_sec)
+            env = self._get_codex_env()
+            self._log_mcp_info_once(env)
             result = await manager.run(
                 self._build_codex_command(prompt),
                 cwd=work_dir,
-                env=self._get_codex_env(),
+                env=env,
             )
             if result["success"]:
                 return result["output"]
@@ -748,7 +892,8 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
         for override in overrides:
             command.extend(["-c", override])
 
-        command.append(prompt)
+        # `subprocess` rejects NUL bytes in argv; defensively strip them from prompts.
+        command.append(prompt.replace("\x00", ""))
         return command
 
     @staticmethod
@@ -782,6 +927,32 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
         env = os.environ.copy()
         env["HOME"] = str(self._isolated_codex_home)
         return env
+
+    def _log_mcp_info_once(self, env: dict[str, str] | None) -> None:
+        """Log whether MCP is enabled/disabled for this agent run (best-effort)."""
+        if self._logged_mcp_info:
+            return
+        self._logged_mcp_info = True
+
+        if self.disable_mcp:
+            home = (env or {}).get("HOME") or str(self._resolve_isolated_codex_home())
+            logger.info("Codex MCP disabled (isolated HOME=%s)", home)
+            return
+
+        codex_home = Path.home() / ".codex"
+        config_path = codex_home / "config.toml"
+        if not config_path.exists():
+            logger.warning("Codex MCP enabled but %s is missing", config_path)
+            return
+
+        try:
+            raw = config_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            logger.warning("Codex MCP enabled but failed to read %s", config_path)
+            return
+
+        if "mcp" not in raw.lower():
+            logger.warning("Codex MCP enabled but no MCP config detected in %s", config_path)
 
     def _resolve_isolated_codex_home(self) -> Path:
         """Resolve a stable Codex home to avoid repeated temp copies."""

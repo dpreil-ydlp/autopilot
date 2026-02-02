@@ -66,6 +66,14 @@ autopilot doctor
 autopilot --version
 ```
 
+Note: When your repo's validation commands include `ruff` and/or `pytest`, Autopilot will automatically
+create a per-repo virtualenv at `.autopilot/venv` (shared across worktrees) and install baseline tools
+there. You should not need to pre-install `ruff`/`pytest` per repo.
+
+Note: Autopilot disables MCP servers for planner/reviewer by default (for deterministic runs), but the
+builder (when `builder.mode: codex_cli`) keeps MCP enabled by default so it can use your configured MCP
+tools.
+
 ## Quick Start
 
 ### 1. Create a Task

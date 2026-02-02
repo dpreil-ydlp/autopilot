@@ -48,6 +48,7 @@ class OrchestratorMachine:
         OrchestratorState.MONITOR: [
             OrchestratorState.MONITOR,  # Continue monitoring
             OrchestratorState.FINAL_UAT_GENERATE,
+            OrchestratorState.DONE,  # Allow skipping final UAT/commit/push when not configured
             OrchestratorState.FAILED,
             OrchestratorState.PAUSED,
         ],
@@ -57,10 +58,12 @@ class OrchestratorMachine:
         ],
         OrchestratorState.FINAL_UAT_RUN: [
             OrchestratorState.COMMIT,
+            OrchestratorState.DONE,  # Allow skipping orchestrator-level commit/push
             OrchestratorState.FAILED,
         ],
         OrchestratorState.COMMIT: [
             OrchestratorState.PUSH,
+            OrchestratorState.DONE,  # Allow skipping push when GitHub integration is disabled
             OrchestratorState.FAILED,
         ],
         OrchestratorState.PUSH: [
@@ -188,16 +191,22 @@ class OrchestratorMachine:
         for key, value in updates.items():
             setattr(task, key, value)
 
-        # Best-effort: track a "current task" for CLI/UX even when running in parallel.
+        now = datetime.now(UTC).isoformat()
+
+        # Best-effort: track a "current task" for CLI/UX, even with parallel workers.
         status = updates.get("status")
         if status == "running":
             self.state.current_task_id = task_id
-            self.state.scheduler.current_task_id = task_id
         elif status in {"done", "failed", "blocked"} and self.state.current_task_id == task_id:
-            self.state.current_task_id = None
-            self.state.scheduler.current_task_id = None
+            running = sorted(
+                tid for tid, t in self.state.tasks.items() if (t.status or "") == "running"
+            )
+            self.state.current_task_id = running[0] if running else None
 
-        task.updated_at = self.state.updated_at
+        # Keep scheduler.current_task_id in sync with the UI-focused current_task_id.
+        self.state.scheduler.current_task_id = self.state.current_task_id
+
+        task.updated_at = now
         save_state(self.state, self.state_path)
 
     def get_task(self, task_id: str) -> TaskState | None:
@@ -219,4 +228,6 @@ class OrchestratorMachine:
         sched = self.state.scheduler
         for key, value in updates.items():
             setattr(sched, key, value)
+        if "current_task_id" not in updates:
+            sched.current_task_id = self.state.current_task_id
         save_state(self.state, self.state_path)

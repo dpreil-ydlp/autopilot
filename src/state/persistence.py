@@ -1,6 +1,7 @@
 """State persistence with atomic writes."""
 
 import json
+import os
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
@@ -203,8 +204,24 @@ def save_state(state: OrchestratorStateModel, state_path: Path) -> None:
     with open(temp_path, "w") as f:
         json.dump(state.model_dump(mode="json"), f, indent=2)
         f.flush()
-        # fsync not directly available in Python, but flush + close ensures write
+        try:
+            os.fsync(f.fileno())
+        except Exception:
+            pass
     temp_path.replace(state_path)
+    try:
+        dir_fd = os.open(str(state_path.parent), os.O_DIRECTORY)
+    except Exception:
+        dir_fd = None
+    if dir_fd is not None:
+        try:
+            os.fsync(dir_fd)
+        except Exception:
+            pass
+        try:
+            os.close(dir_fd)
+        except Exception:
+            pass
 
 
 def generate_run_id() -> str:

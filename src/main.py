@@ -191,6 +191,7 @@ def run(
             return " ".join(parts)
 
         notices = [
+            codex_notice("builder", config.builder),
             codex_notice("planner", config.planner),
             codex_notice("reviewer", config.reviewer),
         ]
@@ -318,19 +319,32 @@ def status(ctx: click.Context) -> None:
         click.echo("No Autopilot run in progress")
         return
 
-    import json
+    from .state.persistence import load_state
 
-    with open(state_path) as f:
-        state = json.load(f)
+    state = load_state(state_path)
+    if state is None:
+        click.echo("No Autopilot run in progress")
+        return
 
-    click.echo(f"Run ID: {state.get('run_id', 'unknown')}")
-    click.echo(f"State: {state.get('state', 'unknown')}")
-    click.echo(f"Current Task: {state.get('current_task_id', 'none')}")
-    click.echo(f"Created: {state.get('created_at', 'unknown')}")
-    click.echo(f"Updated: {state.get('updated_at', 'unknown')}")
+    click.echo(f"Run ID: {state.run_id}")
+    click.echo(f"State: {state.state.value}")
+    click.echo(f"Current Task: {state.current_task_id or 'none'}")
+    click.echo(f"Created: {state.created_at}")
+    click.echo(f"Updated: {state.updated_at}")
 
-    if state.get("error_message"):
-        click.echo(f"\nError: {state['error_message']}")
+    if state.scheduler:
+        sched = state.scheduler
+        click.echo(
+            "Scheduler: "
+            f"{sched.tasks_done}/{sched.tasks_total} done, "
+            f"{sched.tasks_running} running, "
+            f"{sched.tasks_failed} failed, "
+            f"{sched.tasks_blocked} blocked, "
+            f"{sched.tasks_pending} pending"
+        )
+
+    if state.error_message:
+        click.echo(f"\nError: {state.error_message}")
 
 
 @cli.command()

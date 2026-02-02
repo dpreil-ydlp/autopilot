@@ -25,7 +25,7 @@ def test_orchestrator_machine_resume(tmp_path):
     run_id = machine1.state.run_id
 
     # Resume with new machine instance
-    machine2 = OrchestratorMachine(state_path)
+    machine2 = OrchestratorMachine(state_path, resume=True)
 
     assert machine2.state.run_id == run_id
     assert machine2.current_state == OrchestratorState.INIT
@@ -61,6 +61,20 @@ def test_can_transition_to(tmp_path):
     assert not machine.can_transition_to(OrchestratorState.DONE)
 
 
+def test_can_skip_to_done_from_monitor(tmp_path):
+    """Allow DONE when optional phases are not configured."""
+    state_path = tmp_path / "state.json"
+    machine = OrchestratorMachine(state_path)
+
+    machine.transition(OrchestratorState.PRECHECK)
+    machine.transition(OrchestratorState.PLAN)
+    machine.transition(OrchestratorState.SCHEDULE)
+    machine.transition(OrchestratorState.DISPATCH)
+    machine.transition(OrchestratorState.MONITOR)
+    machine.transition(OrchestratorState.DONE)
+    assert machine.current_state == OrchestratorState.DONE
+
+
 def test_transition_with_error(tmp_path):
     """Test transition to FAILED state with error message."""
     state_path = tmp_path / "state.json"
@@ -93,6 +107,22 @@ def test_update_task(tmp_path):
     assert task.task_id == "task-1"
     assert task.title == "Task 1"
     assert task.status == "running"
+    assert machine.state.current_task_id == "task-1"
+    assert machine.state.scheduler.current_task_id == "task-1"
+
+
+def test_current_task_id_with_parallel_tasks(tmp_path):
+    """Track current_task_id even with overlapping running tasks."""
+    state_path = tmp_path / "state.json"
+    machine = OrchestratorMachine(state_path)
+
+    machine.update_task("task-1", title="Task 1", status="running")
+    machine.update_task("task-2", title="Task 2", status="running")
+    assert machine.state.current_task_id == "task-2"
+
+    # Completing the "current" task should fall back to another running task.
+    machine.update_task("task-2", status="done")
+    assert machine.state.current_task_id == "task-1"
 
 
 def test_get_nonexistent_task(tmp_path):

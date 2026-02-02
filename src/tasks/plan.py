@@ -1,12 +1,15 @@
-"""Plan expander using Codex agent."""
+"""Plan expander using Codex or Claude agent."""
 
 import json
 import logging
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..agents.codex import CodexAgent
+from ..agents.claude import ClaudeAgent
+from .chunker import PlanChunker
 from .parser import ParsedTask, parse_task_file
 
 logger = logging.getLogger(__name__)
@@ -50,16 +53,40 @@ async def expand_plan(
     if not plan_path.exists():
         raise PlanExpanderError(f"Plan file not found: {plan_path}")
 
+    # Check if plan needs chunking due to size
+    chunker = PlanChunker(plan_path)
+    metadata = chunker.analyze()
+
+    if metadata["needs_chunking"]:
+        logger.info(
+            f"Large plan detected ({metadata['total_tokens']:.0f} tokens). "
+            f"Using chunked expansion."
+        )
+        return await _expand_chunked_plan(
+            plan_path,
+            planner_config,
+            metadata,
+            chunker,
+            output_dir,
+            progress_callback,
+        )
+
     with open(plan_path) as f:
         plan_content = f.read()
 
-    # Invoke Codex agent for planning
-    agent = CodexAgent(planner_config)
+    # Invoke agent for planning (Codex or Claude based on config)
+    planner_mode = (planner_config.get("mode") or "codex_cli").lower()
+    if planner_mode == "claude":
+        agent = ClaudeAgent(planner_config)
+        agent_name = "Claude"
+    else:
+        agent = CodexAgent(planner_config)
+        agent_name = "Codex"
 
     try:
         if progress_callback:
-            progress_callback("Codex planning started")
-        logger.info(f"Expanding plan: {plan_path}")
+            progress_callback(f"{agent_name} planning started")
+        logger.info(f"Expanding plan: {plan_path} using {agent_name}")
         plan_context = f"Plan file: {plan_path.name}\nPlan size: {len(plan_content)} characters"
         plan_result = await agent.plan(
             plan_content=plan_content,
@@ -68,7 +95,7 @@ async def expand_plan(
             context=plan_context,
         )
         if progress_callback:
-            progress_callback("Codex planning completed")
+            progress_callback(f"{agent_name} planning completed")
 
         # Extract DAG structure from plan result
         tasks_data = plan_result.get("tasks", [])
@@ -221,6 +248,313 @@ async def expand_plan(
 
     except Exception as e:
         raise PlanExpanderError(f"Plan expansion failed: {e}") from e
+
+
+async def _expand_chunked_plan(
+    plan_path: Path,
+    planner_config: dict,
+    metadata: dict,
+    chunker: PlanChunker,
+    output_dir: Path | None,
+    progress_callback: Callable[[str], None] | None,
+) -> TaskDAG:
+    """Expand a large plan by processing it in chunks.
+
+    Args:
+        plan_path: Path to plan markdown file
+        planner_config: Planner agent configuration
+        metadata: Plan analysis metadata from chunker
+        chunker: PlanChunker instance
+        output_dir: Directory to write task files
+        progress_callback: Optional progress callback
+
+    Returns:
+        TaskDAG with all tasks from all chunks
+
+    Raises:
+        PlanExpanderError: If chunked expansion fails
+    """
+    # Create chunks
+    chunks = chunker.create_chunks(metadata)
+    logger.info(f"Expanding plan in {len(chunks)} chunks")
+
+    # Set output directory
+    if output_dir is None:
+        output_dir = Path(".autopilot/plan/tasks")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create temp directory for chunk files
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+
+        # Determine agent to use
+        planner_mode = (planner_config.get("mode") or "codex_cli").lower()
+        if planner_mode == "claude":
+            agent = ClaudeAgent(planner_config)
+            agent_name = "Claude"
+        else:
+            agent = CodexAgent(planner_config)
+            agent_name = "Codex"
+
+        # Process each chunk
+        all_tasks = {}
+        global_edges = []
+        task_id_offset = 0
+        chunk_task_counts = []
+
+        for i, chunk in enumerate(chunks):
+            chunk_num = i + 1
+            logger.info(
+                f"Processing chunk {chunk_num}/{len(chunks)}: {chunk.id} "
+                f"({chunk.estimated_tokens:.0f} tokens, {len(chunk.sections)} sections)"
+            )
+
+            if progress_callback:
+                progress_callback(
+                    f"Processing chunk {chunk_num}/{len(chunks)}: {chunk.id}"
+                )
+
+            # Write chunk to temp file
+            chunk_path = temp_path / f"chunk_{chunk_num}.md"
+            chunker.write_chunk(chunk, chunk_path)
+
+            # Read chunk content
+            with open(chunk_path) as f:
+                chunk_content = f.read()
+
+            # Expand this chunk
+            try:
+                chunk_context = f"Chunk {chunk_num}/{len(chunks)}: {chunk.id}\nPlan size: {len(chunk_content)} characters"
+                # Use longer timeout for chunked processing (600s instead of 300s)
+                chunk_timeout = planner_config.get("timeout_sec", 300)
+                chunk_timeout = max(chunk_timeout, 600)  # Ensure at least 10 minutes for chunks
+                chunk_result = await agent.plan(
+                    plan_content=chunk_content,
+                    timeout_sec=chunk_timeout,
+                    work_dir=plan_path.parent,
+                    context=chunk_context,
+                )
+
+                # Extract tasks from this chunk
+                tasks_data = chunk_result.get("tasks", [])
+                raw_edges = chunk_result.get("edges", [])
+
+                # Persist chunk raw output for debugging
+                chunk_raw = output_dir / f".chunk_{chunk_num}_raw.json"
+                try:
+                    with open(chunk_raw, "w") as f:
+                        json.dump(chunk_result, f, indent=2)
+                except Exception:
+                    pass
+
+                # Process tasks with ID offset
+                chunk_tasks = []
+                for task_idx, task_data in enumerate(tasks_data):
+                    if not isinstance(task_data, dict):
+                        logger.warning(
+                            f"Chunk {chunk_num}: Invalid task entry, skipping"
+                        )
+                        continue
+
+                    # Track the original/local task ID from the planner
+                    local_task_id = task_data.get("id")
+                    if not local_task_id:
+                        # Generate local ID for this chunk (1-indexed)
+                        local_task_id = f"task-{task_idx + 1}"
+                        task_data["id"] = local_task_id
+
+                    # Extract the numeric part for remapping
+                    try:
+                        local_num = int(local_task_id.split("-")[1])
+                    except (ValueError, IndexError):
+                        local_num = task_idx + 1
+
+                    # Generate global task ID based on offset
+                    global_task_id = f"task-{task_id_offset + local_num}"
+
+                    # Remap dependencies
+                    dependencies = task_data.get("depends_on") or task_data.get("dependencies", [])
+                    if isinstance(dependencies, str):
+                        dependencies = [dependencies]
+                    if isinstance(dependencies, list):
+                        # Remap dependency IDs to global IDs
+                        remapped_deps = []
+                        for dep in dependencies:
+                            if isinstance(dep, str) and dep.startswith("task-"):
+                                try:
+                                    dep_num = int(dep.split("-")[1])
+                                    global_dep = f"task-{task_id_offset + dep_num}"
+                                    remapped_deps.append(global_dep)
+                                except (ValueError, IndexError):
+                                    # Keep original if parsing fails
+                                    remapped_deps.append(dep)
+                            else:
+                                remapped_deps.append(dep)
+                        dependencies = remapped_deps
+
+                    # Update task data with remapped dependencies
+                    task_data["depends_on"] = dependencies
+
+                    # Extract other fields
+                    description = task_data.get("description") or task_data.get("goal") or ""
+                    title = task_data.get("title") or (description if description else f"Task {global_task_id}")
+
+                    # Extract validation commands
+                    validation_commands = task_data.get("validation_commands", {})
+                    if not isinstance(validation_commands, dict):
+                        validation_commands = {}
+
+                    # Extract allowed paths
+                    raw_allowed_paths = task_data.get("allowed_paths")
+                    inferred_allowed = _infer_allowed_paths(title, description, plan_path.parent)
+
+                    def is_generic_allowed_paths(paths: list[str]) -> bool:
+                        normalized = {
+                            p.rstrip("/").strip() for p in paths if p and str(p).strip()
+                        }
+                        return bool(normalized) and normalized.issubset({"src", "tests"})
+
+                    if isinstance(raw_allowed_paths, list) and raw_allowed_paths:
+                        allowed_paths = [
+                            str(p) for p in raw_allowed_paths if str(p).strip()
+                        ]
+                        if inferred_allowed and is_generic_allowed_paths(
+                            allowed_paths
+                        ):
+                            allowed_paths = inferred_allowed
+                    else:
+                        allowed_paths = inferred_allowed or ["src/", "tests/"]
+
+                    skills_used = (
+                        task_data.get("suggested_claude_skills")
+                        or task_data.get("suggested_skills")
+                        or task_data.get("skills_used", [])
+                    )
+                    mcp_servers_used = task_data.get("suggested_mcp_servers") or task_data.get(
+                        "mcp_servers_used", []
+                    )
+                    subagents_used = task_data.get("suggested_subagents") or task_data.get(
+                        "subagents_used", []
+                    )
+                    estimated_complexity = task_data.get("estimated_complexity", "medium")
+                    goal = task_data.get("goal", description)
+                    acceptance_criteria = task_data.get("acceptance_criteria", [])
+
+                    # Generate task file content
+                    task_content = _generate_task_file(
+                        task_id=global_task_id,
+                        title=title,
+                        description=description,
+                        dependencies=dependencies,
+                        goal=goal,
+                        acceptance_criteria=acceptance_criteria,
+                        allowed_paths=allowed_paths,
+                        skills_used=skills_used,
+                        mcp_servers_used=mcp_servers_used,
+                        subagents_used=subagents_used,
+                        estimated_complexity=estimated_complexity,
+                        validation_commands=validation_commands,
+                    )
+
+                    # Write task file
+                    task_path = output_dir / f"{global_task_id}.md"
+                    with open(task_path, "w") as f:
+                        f.write(task_content)
+
+                    # Parse the generated task file
+                    parsed_task = parse_task_file(task_path)
+                    all_tasks[global_task_id] = parsed_task
+                    chunk_tasks.append(global_task_id)
+
+                    logger.info(
+                        f"Chunk {chunk_num}: Task {global_task_id} - {title} ({estimated_complexity})"
+                    )
+
+                # Track task count for this chunk
+                chunk_task_counts.append(len(chunk_tasks))
+
+                # Add edges from this chunk
+                task_id_set = set(all_tasks.keys())
+                chunk_edges = _merge_edges(raw_edges, tasks_data, task_id_set)
+                global_edges.extend(chunk_edges)
+
+                if progress_callback:
+                    progress_callback(
+                        f"Chunk {chunk_num} completed: {len(chunk_tasks)} tasks"
+                    )
+
+            except Exception as e:
+                raise PlanExpanderError(
+                    f"Failed to expand chunk {chunk_num} ({chunk.id}): {e}"
+                ) from e
+
+            # Update task ID offset for next chunk
+            task_id_offset += len(chunk_tasks)
+
+        # Reconstruct task IDs from chunk_task_counts for cross-chunk dependencies
+        task_ids_in_order = []
+        offset = 1
+        for count in chunk_task_counts:
+            for i in range(count):
+                task_ids_in_order.append(f"task-{offset + i}")
+            offset += count
+
+        # Add sequential dependencies between chunks
+        # Last task of chunk N → First task of chunk N+1
+        for i in range(len(chunk_task_counts) - 1):
+            # Get the actual task IDs from the reconstructed list
+            chunk_start_idx = sum(chunk_task_counts[:i])
+            chunk_end_idx = sum(chunk_task_counts[: i + 1])
+
+            if chunk_start_idx < chunk_end_idx and chunk_end_idx <= len(task_ids_in_order):
+                # Last task of chunk i
+                last_task_id = task_ids_in_order[chunk_end_idx - 1]
+
+                # First task of chunk i+1
+                next_chunk_start_idx = chunk_end_idx
+                if next_chunk_start_idx < len(task_ids_in_order):
+                    first_task_id = task_ids_in_order[next_chunk_start_idx]
+
+                    if last_task_id in all_tasks and first_task_id in all_tasks:
+                        global_edges.append((last_task_id, first_task_id))
+                        logger.info(
+                            f"Added cross-chunk dependency: {last_task_id} → {first_task_id}"
+                        )
+
+    # Build final DAG
+    task_id_list = list(all_tasks.keys())
+    topo_order, parallel_batches, cycle_nodes = _toposort_batches(task_id_list, global_edges)
+
+    if cycle_nodes:
+        raise PlanExpanderError(
+            "Cycle detected in chunked task dependencies: "
+            + ", ".join(sorted(cycle_nodes)[:20])
+            + (" ..." if len(cycle_nodes) > 20 else "")
+        )
+
+    # Write final DAG artifact
+    dag_artifact = Path(".autopilot/plan/dag.json")
+    dag_artifact.parent.mkdir(parents=True, exist_ok=True)
+    with open(dag_artifact, "w") as f:
+        json.dump(
+            {
+                "tasks": list(all_tasks.keys()),
+                "edges": global_edges,
+                "topo_order": topo_order,
+                "parallel_batches": parallel_batches,
+            },
+            f,
+            indent=2,
+        )
+
+    logger.info(f"Plan expanded to {len(all_tasks)} tasks across {len(chunks)} chunks")
+
+    return TaskDAG(
+        tasks=all_tasks,
+        edges=[tuple(edge) for edge in global_edges],
+        topo_order=topo_order,
+        parallel_batches=parallel_batches,
+    )
 
 
 def _generate_task_file(
@@ -394,7 +728,25 @@ def _generate_task_file(
 
 def _infer_allowed_paths(title: str, description: str, repo_root: Path) -> list[str]:
     """Infer allowed paths for a task when the planner doesn't provide any."""
-    text = f"{title}\n{description}".lower()
+    text_raw = f"{title}\n{description}"
+    text = text_raw.lower()
+
+    # Prefer explicit paths mentioned in the plan/task description.
+    # Example: `src/autopilot_smoke/math_add.py` -> allow `src/autopilot_smoke/`.
+    import re
+
+    explicit: set[str] = set()
+    for m in re.findall(r"(?:src|tests)/[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+", text):
+        parts = m.split("/")
+        if len(parts) >= 2:
+            explicit.add(f"{parts[0]}/{parts[1]}/")
+    # Also accept directory-only mentions like `src/foo/`.
+    for m in re.findall(r"(?:src|tests)/[A-Za-z0-9_.-]+/", text):
+        parts = m.split("/")
+        if len(parts) >= 2:
+            explicit.add(f"{parts[0]}/{parts[1]}/")
+    if explicit:
+        return sorted(explicit)
 
     frontend_dirs = ["frontend", "client", "web", "app"]
     backend_dirs = ["backend", "server", "api"]

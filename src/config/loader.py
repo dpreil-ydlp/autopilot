@@ -107,6 +107,7 @@ def create_default_config(config_path: Path) -> None:
         },
         "builder": {
             "mode": "claude",
+            "disable_mcp": False,
             "cli_path": "claude",
             "max_retries": 1,
             "permission_mode": "bypassPermissions",

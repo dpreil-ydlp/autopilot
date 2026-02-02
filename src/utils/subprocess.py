@@ -139,6 +139,8 @@ class SubprocessManager:
             log_path = self.log_dir / f"cmd_{timestamp}.log"
 
         try:
+            process: asyncio.subprocess.Process | None = None
+            read_task: asyncio.Task[None] | None = None
             try:
                 process = await asyncio.create_subprocess_exec(
                     *command,
@@ -256,6 +258,33 @@ class SubprocessManager:
                     f"Working directory not found: {cwd} (while running: {command[0]})"
                 )
             raise SubprocessError(f"Command not found: {command[0]}")
+        except asyncio.CancelledError:
+            # Ensure we do not leak subprocess transports, which can surface as
+            # "Exception ignored ... Event loop is closed" at shutdown.
+            try:
+                if read_task is not None and not read_task.done():
+                    read_task.cancel()
+                    try:
+                        await read_task
+                    except Exception:
+                        pass
+                if process is not None:
+                    await self._terminate_process(process)
+            finally:
+                raise
+        except KeyboardInterrupt:
+            # Mirror the cancellation cleanup for Ctrl+C so we don't leak transports on abort.
+            try:
+                if read_task is not None and not read_task.done():
+                    read_task.cancel()
+                    try:
+                        await read_task
+                    except Exception:
+                        pass
+                if process is not None:
+                    await self._terminate_process(process)
+            finally:
+                raise
         except Exception as e:
             raise SubprocessError(f"Subprocess error: {e}")
 
