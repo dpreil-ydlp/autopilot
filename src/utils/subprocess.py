@@ -109,6 +109,7 @@ class SubprocessManager:
         env: dict[str, str] | None = None,
         capture_output: bool = True,
         on_output_line: Callable[[str], None] | None = None,
+        stdin: str | None = None,
     ) -> dict:
         """Run command with timeout and stuck detection.
 
@@ -117,6 +118,7 @@ class SubprocessManager:
             cwd: Working directory
             env: Environment variables
             capture_output: Whether to capture stdout/stderr
+            stdin: Optional string to write to stdin
 
         Returns:
             Result dict with keys:
@@ -142,14 +144,24 @@ class SubprocessManager:
             process: asyncio.subprocess.Process | None = None
             read_task: asyncio.Task[None] | None = None
             try:
+                logger.info(f"Creating subprocess with cwd={cwd}, capture_output={capture_output}, stdin={'yes' if stdin else 'no'}")
                 process = await asyncio.create_subprocess_exec(
                     *command,
                     cwd=cwd,
                     env=env,
                     start_new_session=(os.name != "nt"),
+                    stdin=asyncio.subprocess.PIPE if stdin else None,
                     stdout=asyncio.subprocess.PIPE if capture_output else None,
                     stderr=asyncio.subprocess.PIPE if capture_output else None,
                 )
+                logger.info(f"Subprocess created with PID={process.pid}")
+
+                # Write to stdin if provided
+                if stdin and process.stdin:
+                    process.stdin.write(stdin.encode('utf-8'))
+                    await process.stdin.drain()
+                    process.stdin.close()
+                    logger.info(f"Wrote {len(stdin)} bytes to stdin")
             except FileNotFoundError:
                 # If the caller provided a stripped env (common when overriding HOME),
                 # ensure PATH is present so executables like `git` can be resolved.
@@ -195,10 +207,12 @@ class SubprocessManager:
                 )
 
                 try:
+                    logger.info(f"Waiting for process {process.pid} to complete (timeout={self.timeout_sec}s)...")
                     await asyncio.wait_for(process.wait(), timeout=self.timeout_sec)
                     timed_out = False
                     stuck = False
                     exit_code = process.returncode
+                    logger.info(f"Process {process.pid} completed with exit_code={exit_code}, output_lines={len(output_lines)}")
                 except TimeoutError:
                     if self.stuck_no_output_sec:
                         time_since_output = (
@@ -337,6 +351,7 @@ class SubprocessManager:
             # Read stdout and stderr concurrently
             readers = []
             if process.stdout:
+                logger.info(f"Starting stdout reader for PID={process.pid}")
                 readers.append(
                     self._read_stream(
                         process.stdout,
@@ -344,9 +359,11 @@ class SubprocessManager:
                         output_lines,
                         log_file,
                         on_output_line,
+                        stream_name="stdout",
                     )
                 )
             if process.stderr:
+                logger.info(f"Starting stderr reader for PID={process.pid}")
                 readers.append(
                     self._read_stream(
                         process.stderr,
@@ -354,11 +371,14 @@ class SubprocessManager:
                         output_lines,
                         log_file,
                         on_output_line,
+                        stream_name="stderr",
                     )
                 )
 
             # Wait for all streams to close
+            logger.info(f"Waiting for {len(readers)} stream(s) to close for PID={process.pid}")
             await asyncio.gather(*readers)
+            logger.info(f"All streams closed for PID={process.pid}")
 
         finally:
             if log_file:
@@ -371,6 +391,7 @@ class SubprocessManager:
         output_lines: list[str],
         log_file: object | None = None,
         on_output_line: Callable[[str], None] | None = None,
+        stream_name: str = "unknown",
     ) -> None:
         """Read from a single stream.
 
@@ -379,10 +400,14 @@ class SubprocessManager:
             last_output_time: Updated when output received
             output_lines: Accumulates output lines
             log_file: Optional log file
+            stream_name: Name of stream (stdout/stderr) for logging
         """
+        line_count = 0
+        logger.info(f"Starting to read from {stream_name} stream")
         while True:
             line = await stream.readline()
             if not line:
+                logger.info(f"{stream_name} stream closed after {line_count} lines")
                 break
 
             line_str = line.decode("utf-8", errors="replace")
@@ -394,3 +419,8 @@ class SubprocessManager:
             if log_file:
                 log_file.write(line_str)
                 log_file.flush()
+
+            line_count += 1
+            # Log first line and every 100 lines to track progress
+            if line_count == 1 or line_count % 100 == 0:
+                logger.info(f"Read {line_count} lines from {stream_name} (last line: {line_str[:100]!r}...)")

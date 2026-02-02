@@ -128,7 +128,6 @@ class ClaudeAgent(BaseAgent):
                         "--output-format",
                         "stream-json",
                         "--include-partial-messages",
-                        wrapped_prompt,
                     ]
                 else:
                     command = [
@@ -136,7 +135,6 @@ class ClaudeAgent(BaseAgent):
                         "--permission-mode",
                         self.permission_mode,
                         "--print",
-                        wrapped_prompt,
                     ]
                 if self.system_prompt:
                     command.insert(1, "--system-prompt")
@@ -207,6 +205,7 @@ class ClaudeAgent(BaseAgent):
                     command,
                     cwd=work_dir,
                     on_output_line=handle_line if self.stream_output else None,
+                    stdin=wrapped_prompt,
                 )
 
                 if self.stream_output and stream_state["buffer"]:
@@ -345,9 +344,9 @@ Output ONLY the JSON, no other text."""
                 "--verbose",
                 "--output-format", "stream-json",
                 "--include-partial-messages",
-                prompt,
             ],
             cwd=work_dir or Path.cwd(),
+            stdin=prompt,
         )
 
         if not result["success"]:
@@ -430,6 +429,7 @@ Output ONLY the JSON, no other text."""
             work_dir = Path(tempfile.gettempdir())
 
         # For planning, use verbose output (required by --output-format=stream-json with --print)
+        # Pass prompt via stdin to avoid issues with large command-line arguments
         result = await manager.run(
             command=[
                 self.cli_path,
@@ -437,9 +437,9 @@ Output ONLY the JSON, no other text."""
                 "--print",
                 "--verbose",  # Required when using --output-format=stream-json with --print
                 "--output-format", "stream-json",
-                prompt,
             ],
             cwd=work_dir,
+            stdin=prompt,
         )
 
         if not result["success"]:
@@ -560,9 +560,9 @@ Output ONLY the Python code, no markdown formatting, no explanations."""
                 "--verbose",
                 "--output-format", "stream-json",
                 "--include-partial-messages",
-                prompt,
             ],
             cwd=work_dir or Path.cwd(),
+            stdin=prompt,
         )
 
         if not result["success"]:
@@ -634,6 +634,11 @@ class TestUATTask:
                             for block in contents:
                                 if block.get("type") == "text" and block.get("text"):
                                     text_parts.append(block["text"])
+                    elif payload_type == "result":
+                        # Extract result text if available
+                        result_text = payload.get("result", "")
+                        if result_text:
+                            text_parts.append(result_text)
                 except (json.JSONDecodeError, Exception):
                     # Skip unparseable lines in streaming JSON mode
                     pass
@@ -644,16 +649,20 @@ class TestUATTask:
         # If we extracted text, use it; otherwise use raw output
         text_output = "\n".join(text_parts) if text_parts else output
 
-        logger.debug(f"Extracted {len(text_parts)} text parts from {len(output.split(chr(10)))} output lines")
-        logger.debug(f"Text output length: {len(text_output)} chars")
+        logger.info(f"Extracted {len(text_parts)} text parts from {len(output.split(chr(10)))} output lines")
+        logger.info(f"Text output length: {len(text_output)} chars")
+        if text_parts:
+            logger.info(f"Text parts preview: {text_parts[0][:200] if text_parts[0] else 'empty'}...")
 
         # Try to parse as complete JSON first (for non-streaming format)
         try:
             parsed = json.loads(text_output.strip())
+            logger.info(f"Parsed JSON, keys: {list(parsed.keys()) if isinstance(parsed, dict) else type(parsed)}")
             if isinstance(parsed, dict) and "tasks" in parsed:
-                logger.debug("Successfully parsed complete JSON output")
+                logger.info(f"Successfully parsed JSON with {len(parsed['tasks'])} tasks")
                 return parsed
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            logger.info(f"Failed to parse as JSON: {e}")
             pass  # Continue with other extraction methods
 
         # Look for JSON in code blocks or plain JSON
@@ -696,8 +705,14 @@ class TestUATTask:
                         # Try to parse immediately as it might be a single-line JSON
                         try:
                             parsed = json.loads(stripped)
-                            logger.debug(f"Successfully parsed single-line JSON at line {i}")
-                            return parsed
+                            # Only return if it looks like plan data (has tasks or result field)
+                            if isinstance(parsed, dict) and ("tasks" in parsed or "result" in parsed or "edges" in parsed):
+                                logger.debug(f"Successfully parsed single-line JSON at line {i} with plan data")
+                                return parsed
+                            else:
+                                # Not plan data, continue looking
+                                logger.debug(f"Found single-line JSON at line {i} but no plan data, continuing...")
+                                json_start = -1  # Reset to continue looking
                         except json.JSONDecodeError:
                             pass  # Not single-line JSON, continue accumulating
                     elif json_start >= 0:

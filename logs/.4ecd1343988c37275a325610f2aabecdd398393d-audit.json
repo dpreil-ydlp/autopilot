@@ -1,0 +1,20 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 14
+    },
+    "auditLog": "/Users/davidpreil/Projects/autopilot/logs/.4ecd1343988c37275a325610f2aabecdd398393d-audit.json",
+    "files": [
+        {
+            "date": 1769968116680,
+            "name": "/Users/davidpreil/Projects/autopilot/logs/mcp-puppeteer-2026-02-01.log",
+            "hash": "533dab2e3b87576ae7d39f7698569fc64b774dad4d092fa0fee9e963372c2e59"
+        },
+        {
+            "date": 1770029901791,
+            "name": "/Users/davidpreil/Projects/autopilot/logs/mcp-puppeteer-2026-02-02.log",
+            "hash": "d132b90470c6b496a52ffedc7732b4311668d398b4741023d9d385214e7694a4"
+        }
+    ],
+    "hashType": "sha256"
+}
