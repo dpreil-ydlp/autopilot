@@ -484,6 +484,17 @@ async def _expand_chunked_plan(
                     )
 
             except Exception as e:
+                # Save chunk content for debugging
+                chunk_debug_path = output_dir / f".chunk_{chunk_num}_error.md"
+                try:
+                    with open(chunk_debug_path, "w") as f:
+                        f.write(f"# Chunk {chunk_num} ({chunk.id}) - FAILED\n\n")
+                        f.write(f"## Error\n{e}\n\n")
+                        f.write(f"## Chunk Content\n```\n{chunk_content}\n```\n")
+                    logger.info(f"Saved chunk debug info to: {chunk_debug_path}")
+                except Exception:
+                    pass
+
                 raise PlanExpanderError(
                     f"Failed to expand chunk {chunk_num} ({chunk.id}): {e}"
                 ) from e

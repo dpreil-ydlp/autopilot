@@ -444,6 +444,20 @@ Output ONLY the JSON, no other text."""
         plan_data = self._extract_summary(output)
 
         if plan_data is None:
+            # Enhanced error logging with raw output
+            logger.error(f"Failed to extract JSON from Claude planning output")
+            logger.error(f"Output length: {len(output)} characters")
+            logger.error(f"Raw output (first 3000 chars):\n{output[:3000]}")
+
+            # Try to save raw output for debugging
+            try:
+                debug_path = Path(".autopilot/plan") / "claude_parse_error_raw.txt"
+                debug_path.parent.mkdir(parents=True, exist_ok=True)
+                debug_path.write_text(output)
+                logger.error(f"Raw output saved to: {debug_path}")
+            except Exception as e:
+                logger.error(f"Failed to save debug output: {e}")
+
             raise AgentError("Failed to extract JSON from Claude planning output")
 
         return plan_data
@@ -554,33 +568,53 @@ class TestUATTask:
             Parsed summary dict or None
         """
         # First, try to extract text from streaming JSON format
-        text_parts = []
-        for line in output.split("\n"):
+        # But only if the output is actually in streaming JSON format
+        lines = output.split("\n")
+
+        # Detect if we have streaming JSON format (check if majority of lines parse as JSON with known types)
+        json_line_count = 0
+        for line in lines:
             try:
                 payload = json.loads(line)
-                payload_type = payload.get("type")
-                if payload_type == "stream_event":
-                    event = payload.get("event", {})
-                    if event.get("type") == "content_block_delta":
-                        delta = event.get("delta", {})
-                        if delta.get("type") == "text_delta":
-                            text = delta.get("text", "")
-                            if text:
-                                text_parts.append(text)
-                elif payload_type == "assistant":
-                    message = payload.get("message", {})
-                    contents = message.get("content", [])
-                    if isinstance(contents, list):
-                        for block in contents:
-                            if block.get("type") == "text" and block.get("text"):
-                                text_parts.append(block["text"])
+                payload_type = payload.get("type", "")
+                if payload_type in ("stream_event", "assistant", "error", "message"):
+                    json_line_count += 1
             except (json.JSONDecodeError, Exception):
-                # If not JSON, treat as plain text
-                if line.strip():
-                    text_parts.append(line)
+                pass
+
+        is_streaming_json = json_line_count > len(lines) * 0.3  # At least 30% of lines are streaming JSON
+
+        text_parts = []
+        if is_streaming_json:
+            # Process as streaming JSON
+            for line in lines:
+                try:
+                    payload = json.loads(line)
+                    payload_type = payload.get("type")
+                    if payload_type == "stream_event":
+                        event = payload.get("event", {})
+                        if event.get("type") == "content_block_delta":
+                            delta = event.get("delta", {})
+                            if delta.get("type") == "text_delta":
+                                text = delta.get("text", "")
+                                if text:
+                                    text_parts.append(text)
+                    elif payload_type == "assistant":
+                        message = payload.get("message", {})
+                        contents = message.get("content", [])
+                        if isinstance(contents, list):
+                            for block in contents:
+                                if block.get("type") == "text" and block.get("text"):
+                                    text_parts.append(block["text"])
+                except (json.JSONDecodeError, Exception):
+                    # Skip unparseable lines in streaming JSON mode
+                    pass
+        else:
+            # Treat as plain text - preserve all lines including newlines
+            text_parts = lines
 
         # If we extracted text, use it; otherwise use raw output
-        text_output = "".join(text_parts) if text_parts else output
+        text_output = "\n".join(text_parts) if text_parts else output
 
         logger.debug(f"Extracted {len(text_parts)} text parts from {len(output.split(chr(10)))} output lines")
         logger.debug(f"Text output length: {len(text_output)} chars")
@@ -631,6 +665,13 @@ class TestUATTask:
                     stripped = line.strip()
                     if json_start == -1 and (stripped.startswith("{") or stripped.startswith("[")):
                         json_start = i
+                        # Try to parse immediately as it might be a single-line JSON
+                        try:
+                            parsed = json.loads(stripped)
+                            logger.debug(f"Successfully parsed single-line JSON at line {i}")
+                            return parsed
+                        except json.JSONDecodeError:
+                            pass  # Not single-line JSON, continue accumulating
                     elif json_start >= 0:
                         # Try parsing accumulated JSON
                         json_text = "\n".join(lines[json_start : i + 1])
@@ -650,6 +691,16 @@ class TestUATTask:
                     return parsed
                 except json.JSONDecodeError as e:
                     logger.debug(f"Failed to parse final JSON: {e}")
+
+            # Fallback: Try to fix common JSON issues and parse
+            try:
+                fixed_json = self._fix_malformed_json(text_output)
+                if fixed_json:
+                    parsed = json.loads(fixed_json)
+                    logger.debug("Successfully parsed JSON after fixing common issues")
+                    return parsed
+            except Exception as e:
+                logger.debug(f"Failed to parse fixed JSON: {e}")
 
         except (json.JSONDecodeError, Exception) as e:
             logger.debug(f"Failed to extract JSON summary: {e}")
@@ -697,6 +748,111 @@ class TestUATTask:
 
         except Exception as e:
             logger.debug(f"Failed to extract code: {e}")
+
+        return None
+
+    def _fix_malformed_json(self, text: str) -> str | None:
+        """Attempt to fix common JSON issues and return valid JSON string.
+
+        Args:
+            text: Potentially malformed JSON text
+
+        Returns:
+            Fixed JSON string or None if can't be fixed
+        """
+        import re
+
+        try:
+            # Try parsing as-is first
+            json.loads(text)
+            return text
+        except json.JSONDecodeError:
+            pass
+
+        # Fix 1: Remove trailing commas
+        # Handle both objects and arrays
+        fixed = re.sub(r',(\s*[}\]])', r'\1', text)
+
+        # Fix 2: Remove comments (both // and /* */ style)
+        fixed = re.sub(r'//.*?$', '', fixed, flags=re.MULTILINE)
+        fixed = re.sub(r'/\*.*?\*/', '', fixed, flags=re.DOTALL)
+
+        # Fix 3: Ensure keys are quoted (unquoted keys)
+        fixed = re.sub(r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)', r'\1"\2"\3', fixed)
+
+        # Fix 4: Remove single quotes and replace with double quotes (but careful with escaped quotes)
+        # This is tricky, so we'll try it and if it fails, we revert
+        try:
+            # Replace single quotes with double quotes, but preserve escaped single quotes
+            temp = fixed
+            # First, protect escaped single quotes
+            temp = temp.replace("\\'", "___SINGLE_QUOTE_ESC___")
+            # Then replace single quotes with double quotes
+            temp = temp.replace("'", '"')
+            # Restore escaped single quotes
+            temp = temp.replace("___SINGLE_QUOTE_ESC___", "\\'")
+            fixed = temp
+        except Exception:
+            pass  # Keep original if this fails
+
+        # Fix 5: Try to close incomplete JSON
+        # Count braces and brackets
+        open_braces = fixed.count('{')
+        close_braces = fixed.count('}')
+        open_brackets = fixed.count('[')
+        close_brackets = fixed.count(']')
+
+        # Add missing closing brackets/braces
+        if close_braces < open_braces:
+            fixed += '}' * (open_braces - close_braces)
+        if close_brackets < open_brackets:
+            fixed += ']' * (open_brackets - close_brackets)
+
+        # Try to parse the fixed version
+        try:
+            json.loads(fixed)
+            return fixed
+        except json.JSONDecodeError:
+            pass
+
+        # Fix 6: Extract just the JSON object/array if mixed with text
+        # Find the largest {...} or [...] block
+        matches = []
+
+        # Find all {...} blocks
+        stack = []
+        start = -1
+        for i, char in enumerate(fixed):
+            if char == '{':
+                if not stack:
+                    start = i
+                stack.append('{')
+            elif char == '}' and stack and stack[-1] == '{':
+                stack.pop()
+                if not stack and start >= 0:
+                    matches.append((start, i + 1, fixed[start:i+1]))
+
+        # Find all [...] blocks
+        stack = []
+        start = -1
+        for i, char in enumerate(fixed):
+            if char == '[':
+                if not stack:
+                    start = i
+                stack.append('[')
+            elif char == ']' and stack and stack[-1] == '[':
+                stack.pop()
+                if not stack and start >= 0:
+                    matches.append((start, i + 1, fixed[start:i+1]))
+
+        # Try each match, largest first
+        for _, _, json_str in sorted(matches, key=lambda x: x[1]-x[0], reverse=True):
+            if len(json_str) > 100:  # Only consider substantial JSON
+                try:
+                    json.loads(json_str)
+                    return json_str
+                except json.JSONDecodeError:
+                    continue
 
         return None
 
