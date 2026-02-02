@@ -621,15 +621,18 @@ class TestUATTask:
                         # Found the result message - try to parse the result text as JSON
                         result_text = payload.get("result", "")
                         if result_text:
+                            logger.info(f"Found result message, text length: {len(result_text)} chars")
+                            logger.info(f"Result text preview (first 300 chars): {result_text[:300]}")
                             # Try to parse the result text as JSON directly
                             try:
                                 parsed = json.loads(result_text)
                                 if isinstance(parsed, dict) and ("tasks" in parsed or "edges" in parsed):
                                     logger.info(f"Successfully parsed result JSON with {len(parsed.get('tasks', []))} tasks")
                                     return parsed
-                            except json.JSONDecodeError:
+                            except json.JSONDecodeError as e:
+                                logger.info(f"Result text is not valid JSON: {e}")
                                 # Result text is not JSON - look for JSON in code blocks
-                                logger.info("Result text is not valid JSON, looking for code blocks...")
+                                logger.info("Looking for JSON in code blocks...")
                                 # Extract JSON from code blocks
                                 in_code_block = False
                                 code_content = []
@@ -639,14 +642,14 @@ class TestUATTask:
                                         if "json" in stripped.lower():
                                             in_code_block = True
                                         elif in_code_block:
-                                            # End of code block
+                                            # End of code block - try to parse
                                             try:
                                                 parsed = json.loads("\n".join(code_content))
                                                 if isinstance(parsed, dict) and ("tasks" in parsed or "edges" in parsed):
                                                     logger.info(f"Successfully parsed code block JSON with {len(parsed.get('tasks', []))} tasks")
                                                     return parsed
-                                            except json.JSONDecodeError:
-                                                pass
+                                            except json.JSONDecodeError as e:
+                                                logger.info(f"Failed to parse code block: {e}")
                                             in_code_block = False
                                             code_content = []
                                         continue
