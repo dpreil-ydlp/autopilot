@@ -595,8 +595,7 @@ class TestUATTask:
         Returns:
             Parsed summary dict or None
         """
-        # First, try to extract text from streaming JSON format
-        # But only if the output is actually in streaming JSON format
+        # First, try to extract from streaming JSON format
         lines = output.split("\n")
 
         # Detect if we have streaming JSON format (check if majority of lines parse as JSON with known types)
@@ -605,54 +604,92 @@ class TestUATTask:
             try:
                 payload = json.loads(line)
                 payload_type = payload.get("type", "")
-                if payload_type in ("stream_event", "assistant", "error", "message"):
+                if payload_type in ("stream_event", "assistant", "error", "message", "result", "system"):
                     json_line_count += 1
             except (json.JSONDecodeError, Exception):
                 pass
 
         is_streaming_json = json_line_count > len(lines) * 0.3  # At least 30% of lines are streaming JSON
 
-        text_parts = []
         if is_streaming_json:
-            # Process as streaming JSON
+            # Process as streaming JSON - look for the result message
             for line in lines:
                 try:
                     payload = json.loads(line)
                     payload_type = payload.get("type")
-                    if payload_type == "stream_event":
-                        event = payload.get("event", {})
-                        if event.get("type") == "content_block_delta":
-                            delta = event.get("delta", {})
-                            if delta.get("type") == "text_delta":
-                                text = delta.get("text", "")
-                                if text:
-                                    text_parts.append(text)
-                    elif payload_type == "assistant":
-                        message = payload.get("message", {})
-                        contents = message.get("content", [])
-                        if isinstance(contents, list):
-                            for block in contents:
-                                if block.get("type") == "text" and block.get("text"):
-                                    text_parts.append(block["text"])
-                    elif payload_type == "result":
-                        # Extract result text if available
+                    if payload_type == "result":
+                        # Found the result message - try to parse the result text as JSON
                         result_text = payload.get("result", "")
                         if result_text:
-                            text_parts.append(result_text)
+                            # Try to parse the result text as JSON directly
+                            try:
+                                parsed = json.loads(result_text)
+                                if isinstance(parsed, dict) and ("tasks" in parsed or "edges" in parsed):
+                                    logger.info(f"Successfully parsed result JSON with {len(parsed.get('tasks', []))} tasks")
+                                    return parsed
+                            except json.JSONDecodeError:
+                                # Result text is not JSON - look for JSON in code blocks
+                                logger.info("Result text is not valid JSON, looking for code blocks...")
+                                # Extract JSON from code blocks
+                                in_code_block = False
+                                code_content = []
+                                for result_line in result_text.split("\n"):
+                                    stripped = result_line.strip()
+                                    if stripped.startswith("```"):
+                                        if "json" in stripped.lower():
+                                            in_code_block = True
+                                        elif in_code_block:
+                                            # End of code block
+                                            try:
+                                                parsed = json.loads("\n".join(code_content))
+                                                if isinstance(parsed, dict) and ("tasks" in parsed or "edges" in parsed):
+                                                    logger.info(f"Successfully parsed code block JSON with {len(parsed.get('tasks', []))} tasks")
+                                                    return parsed
+                                            except json.JSONDecodeError:
+                                                pass
+                                            in_code_block = False
+                                            code_content = []
+                                        continue
+                                    elif in_code_block:
+                                        code_content.append(stripped)
+                                # If no JSON found in code blocks, continue to next method
+                                break
                 except (json.JSONDecodeError, Exception):
-                    # Skip unparseable lines in streaming JSON mode
                     pass
-        else:
-            # Treat as plain text - preserve all lines including newlines
-            text_parts = lines
+
+        # Fallback to original text-based extraction for non-streaming or failed streaming
+        text_parts = []
+        for line in lines:
+            try:
+                payload = json.loads(line)
+                payload_type = payload.get("type")
+                if payload_type == "stream_event":
+                    event = payload.get("event", {})
+                    if event.get("type") == "content_block_delta":
+                        delta = event.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            text = delta.get("text", "")
+                            if text:
+                                text_parts.append(text)
+                elif payload_type == "assistant":
+                    message = payload.get("message", {})
+                    contents = message.get("content", [])
+                    if isinstance(contents, list):
+                        for block in contents:
+                            if block.get("type") == "text" and block.get("text"):
+                                text_parts.append(block["text"])
+                elif payload_type == "result":
+                    # Already handled above, skip here
+                    pass
+            except (json.JSONDecodeError, Exception):
+                # Not a JSON line, treat as plain text
+                text_parts.append(line)
 
         # If we extracted text, use it; otherwise use raw output
         text_output = "\n".join(text_parts) if text_parts else output
 
         logger.info(f"Extracted {len(text_parts)} text parts from {len(output.split(chr(10)))} output lines")
         logger.info(f"Text output length: {len(text_output)} chars")
-        if text_parts:
-            logger.info(f"Text parts preview: {text_parts[0][:200] if text_parts[0] else 'empty'}...")
 
         # Try to parse as complete JSON first (for non-streaming format)
         try:
