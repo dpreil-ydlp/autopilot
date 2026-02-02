@@ -618,6 +618,14 @@ class TestUATTask:
                     payload = json.loads(line)
                     payload_type = payload.get("type")
                     if payload_type == "result":
+                        # Check if this is an error result
+                        subtype = payload.get("subtype", "")
+                        if subtype == "error_during_execution":
+                            logger.error(f"Claude returned error result: {payload.get('result', 'No error message')[:200]}")
+                            logger.error(f"Duration: {payload.get('duration_ms')}ms, API duration: {payload.get('duration_api_ms')}ms")
+                            # Don't return None yet, continue to see if there's another result message
+                            continue
+
                         # Found the result message - try to parse the result text as JSON
                         result_text = payload.get("result", "")
                         if result_text:
