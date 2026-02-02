@@ -88,10 +88,11 @@ async def expand_plan(
             progress_callback(f"{agent_name} planning started")
         logger.info(f"Expanding plan: {plan_path} using {agent_name}")
         plan_context = f"Plan file: {plan_path.name}\nPlan size: {len(plan_content)} characters"
+        # Don't pass work_dir to prevent Claude from accessing repo files during planning
         plan_result = await agent.plan(
             plan_content=plan_content,
             timeout_sec=planner_config.get("timeout_sec", 300),
-            work_dir=plan_path.parent,
+            work_dir=None,  # Run in isolated context, not in repo directory
             context=plan_context,
         )
         if progress_callback:
@@ -328,10 +329,11 @@ async def _expand_chunked_plan(
                 # Use longer timeout for chunked processing (600s instead of 300s)
                 chunk_timeout = planner_config.get("timeout_sec", 300)
                 chunk_timeout = max(chunk_timeout, 600)  # Ensure at least 10 minutes for chunks
+                # Don't pass work_dir to prevent Claude from accessing repo files during planning
                 chunk_result = await agent.plan(
                     plan_content=chunk_content,
                     timeout_sec=chunk_timeout,
-                    work_dir=plan_path.parent,
+                    work_dir=None,  # Run in isolated context, not in repo directory
                     context=chunk_context,
                 )
 

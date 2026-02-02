@@ -30,8 +30,8 @@ class PlanChunk:
 class PlanChunker:
     """Breaks large plans into processable chunks."""
 
-    CHUNK_TARGET_TOKENS = 2000  # Target tokens per chunk (input only)
-    CHUNK_MAX_TOKENS = 2500  # Hard limit per chunk (input only)
+    CHUNK_TARGET_TOKENS = 1500  # Target tokens per chunk (reduced from 2000)
+    CHUNK_MAX_TOKENS = 1800  # Hard limit per chunk (reduced from 2500)
 
     # Estimated output multiplier: 1 input token generates ~2-3 output tokens for task DAG
     OUTPUT_MULTIPLIER = 2.5
